@@ -4,10 +4,25 @@
 #include "d3d9_shader_validator.h"
 #include "d3d9_device.h"
 
+#define MGE_XE
+
+#ifdef MGE_XE
+#include "mge/configuration.h"
+#include "mge/mgeversion.h"
+#include "mwse/mgebridge.h"
+#endif // MGE_XE
+
 #include <windows.h>
 
 class D3DFE_PROCESSVERTICES;
 using PSGPERRORID = UINT;
+
+#ifdef MGE_XE
+static const char* welcomeMessage = XE_VERSION_STRING;
+static bool isMW;
+#endif // MGE_XE
+
+
 
 namespace dxvk {
   Logger Logger::s_instance("d3d9.log");
@@ -22,6 +37,41 @@ namespace dxvk {
     return D3D_OK;
   }
 }
+
+#ifdef MGE_XE
+extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* unused) {
+  if (reason != DLL_PROCESS_ATTACH) {
+    return true;
+  }
+
+  // Check if MW is in-process, avoid hooking the CS
+  bool isMW = bool(GetModuleHandle("Morrowind.exe"));
+  if (isMW) {
+    dxvk::Logger::info("mgeXE.log");
+    dxvk::Logger::info(welcomeMessage);
+
+    if (!Configuration.LoadSettings()) {
+      dxvk::Logger::err("Error: MGE XE is not configured. MGE XE will be disabled for this session.");
+      isMW = false;
+      return true;
+    }
+
+    if (~Configuration.MGEFlags & MWSE_DISABLED) {
+      // Load MWSE dll, it injects by itself
+      HMODULE dll = LoadLibraryA("MWSE.dll");
+      if (dll) {
+        // MWSE-MGE integration
+        MWSE_MGEPlugin::init(dll);
+        dxvk::Logger::info("MWSE.dll injected.");
+      } else {
+        dxvk::Logger::err("MWSE.dll failed to load.");
+      }
+    }
+  }
+
+  return true;
+}
+#endif // MGE_XE
 
 extern "C" {
 

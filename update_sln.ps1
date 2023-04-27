@@ -1,0 +1,1 @@
+meson setup _Comp64DebugOptimized --reconfigure
