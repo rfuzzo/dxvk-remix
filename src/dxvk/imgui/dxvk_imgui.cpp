@@ -33,7 +33,7 @@
 #include "dxvk_imgui.h"
 #include "rtx_render/rtx_imgui.h"
 #include "dxvk_device.h"
-#include "dxvk_shader_manager.h"
+#include "rtx_render/rtx_shader_manager.h"
 #include "rtx_render/rtx_camera.h"
 #include "rtx_render/rtx_context.h"
 #include "rtx_render/rtx_options.h"
@@ -1105,13 +1105,38 @@ namespace dxvk {
 
     ImGui::SetTooltipToLastWidgetOnHover("Screenshot will be dumped to, '<exe-dir>/Screenshots'");
 
-    ImGui::SameLine();
+    ImGui::SameLine(200.f);
     ImGui::Checkbox("Include G-Buffer", &RtxOptions::Get()->captureDebugImageObject());
+        
+    { // Recompile Shaders button and its status message
+      using namespace std::chrono;
+      static enum { None, OK, Error } shaderMessage = None;
+      static time_point<steady_clock> shaderMessageTimeout;
 
-    if (ImGui::Button("Recompile Shaders")) {
-      ShaderManager::getInstance()->reloadShaders();
+      if (ImGui::Button("Recompile Shaders")) {
+        if (ShaderManager::getInstance()->reloadShaders())
+          shaderMessage = OK;
+        else
+          shaderMessage = Error;
+
+        // Set a 5 seconds timeout to hide the message later
+        shaderMessageTimeout = steady_clock::now() + seconds(5);
+      }
+
+      if (shaderMessage != None) {
+        // Display the message: green OK if successful, red ERROR if not
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, shaderMessage == OK ? 0xff40ff40 : 0xff4040ff);
+        ImGui::TextUnformatted(shaderMessage == OK ? "OK" : "ERROR");
+        ImGui::PopStyleColor();
+
+        // Hide the message after a timeout
+        if (steady_clock::now() > shaderMessageTimeout) {
+          shaderMessage = None;
+        }
+      }
     }
-    ImGui::SameLine();
+    ImGui::SameLine(200.f);
     ImGui::Checkbox("Live shader edit mode", &RtxOptions::Get()->useLiveShaderEditModeObject());
 
     ImGui::Checkbox("Force V-Sync Off?", &RtxOptions::Get()->forceVsyncOffObject());
@@ -1414,6 +1439,11 @@ namespace dxvk {
 
     if (IMGUI_ADD_TOOLTIP(ImGui::CollapsingHeader("Step 8.3: Water Textures (optional)", collapsingHeaderClosedFlags), RtxOptions::Get()->animatedWaterTexturesDescription())) {
       showTextureSelectionGrid("watertextures", numThumbnailsPerRow, thumbnailSize, RtxOptions::Get()->animatedWaterTexturesRef());
+    }
+
+    if (RtxOptions::Get()->enableAntiCulling() &&
+      IMGUI_ADD_TOOLTIP(ImGui::CollapsingHeader("Step 8.4: Anti-Culling Textures (optional)", collapsingHeaderClosedFlags), RtxOptions::Get()->antiCullingTexturesDescription())) {
+      showTextureSelectionGrid("antiCullingTextures", numThumbnailsPerRow, thumbnailSize, RtxOptions::Get()->antiCullingTexturesRef());
     }
 
     if (IMGUI_ADD_TOOLTIP(ImGui::CollapsingHeader("Step 9.1: Player Model Textures (optional)", collapsingHeaderClosedFlags), RtxOptions::Get()->playerModelTexturesDescription())) {
@@ -1811,8 +1841,6 @@ namespace dxvk {
       ImGui::Checkbox("Render Alpha Blended", &RtxOptions::Get()->enableAlphaBlendObject());
       ImGui::Checkbox("Render Alpha Tested", &RtxOptions::Get()->enableAlphaTestObject());
       ImGui::Separator();
-      ImGui::Checkbox("Enable Triangle Culling", &RtxOptions::Get()->enableCullingObject());
-      ImGui::Separator();
       ImGui::Checkbox("Emissive Blend Override", &RtxOptions::Get()->enableEmissiveBlendEmissiveOverrideObject());
       ImGui::DragFloat("Emissive Blend Override Intensity", &RtxOptions::Get()->emissiveBlendOverrideEmissiveIntensityObject(), 0.001f, 0.0f, FLT_MAX, "%.3f", sliderFlags);
       ImGui::Separator();
@@ -1929,10 +1957,20 @@ namespace dxvk {
 
     if (ImGui::CollapsingHeader("Geometry", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
+      ImGui::Checkbox("Enable Triangle Culling (Globally)", &RtxOptions::Get()->enableCullingObject());
+      ImGui::Checkbox("Enable Triangle Culling (Override Secondary Rays)", &RtxOptions::Get()->enableCullingInSecondaryRaysObject());
+      ImGui::Separator();
       ImGui::DragInt("Min Prims in Static BLAS", &RtxOptions::Get()->minPrimsInStaticBLASObject(), 1.f, 100, 0);
       ImGui::Checkbox("Portals: Virtual Instance Matching", &RtxOptions::Get()->useRayPortalVirtualInstanceMatchingObject());
       ImGui::Checkbox("Portals: Fade In Effect", &RtxOptions::Get()->enablePortalFadeInEffectObject());
       ImGui::Checkbox("Reset Buffer Cache Every Frame", &RtxOptions::Get()->resetBufferCacheOnEveryFrameObject());
+      if (ImGui::CollapsingHeader("Experimental Geometry Features", collapsingHeaderClosedFlags)) {
+        ImGui::Checkbox("Anti-Culling", &RtxOptions::Get()->enableAntiCullingObject());
+        if (RtxOptions::Get()->enableAntiCulling()) {
+          ImGui::InputInt("Instance Max Size", &RtxOptions::Get()->numKeepInstancesObject(), 1, 1, 0);
+          ImGui::DragFloat("Anti-Culling Fov Scale", &RtxOptions::Get()->antiCullingFovScaleObject(), 0.01f, 0.1f, 2.0f);
+        }
+      }
       ImGui::Unindent();
     }
 

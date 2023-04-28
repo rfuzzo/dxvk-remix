@@ -155,6 +155,7 @@ namespace dxvk {
     RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, cutoutTextures, {}, "");
     RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, opacityMicromapIgnoreTextures, {}, "");
     RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, animatedWaterTextures, {}, "");
+    RW_RTX_OPTION("rtx.antiCulling", std::unordered_set<XXH64_hash_t>, antiCullingTextures, {}, "[Experimental] Textures that are forced to extend life length when anti-culling is enabled.\n Some games use different culling methods we can't fully match, use this option to manually add textures to force extend their life when anti-culling fails.");
 
     RW_RTX_OPTION("rtx", std::string, geometryGenerationHashRuleString, "positions,indices,texcoords,geometrydescriptor",
                   "Defines which asset hashes we need to generate via the geometry processing engine.");
@@ -179,7 +180,7 @@ namespace dxvk {
     RTX_OPTION("rtx", TaauPreset,  taauPreset, TaauPreset::Balanced,  "Adjusts TAA-U scaling factor, trades quality for performance.");
     RTX_OPTION_ENV("rtx", GraphicsPreset, graphicsPreset, GraphicsPreset::Auto, "DXVK_GRAPHICS_PRESET_TYPE", "Overall rendering preset, higher presets result in higher image quality, lower presets result in better performance.");
     RTX_OPTION_ENV("rtx", RaytraceModePreset, raytraceModePreset, RaytraceModePreset::Auto, "DXVK_RAYTRACE_MODE_PRESET_TYPE", "");
-    RTX_OPTION("rtx", std::string, sourceRootPath, "", "A path pointing at the root folder of the project, used to override the path to the root of the project generated at build-time (as this path is only valid for the machine the project was originally compiled on). Used primarily for locating shader source files for runtime shader recompilation.");
+    RTX_OPTION_ENV("rtx", std::string, sourceRootPath, "", "RTX_SOURCE_ROOT", "A path pointing at the root folder of the project, used to override the path to the root of the project generated at build-time (as this path is only valid for the machine the project was originally compiled on). Used primarily for locating shader source files for runtime shader recompilation.");
     RTX_OPTION("rtx", bool,  recompileShadersOnLaunch, false, "When set to true runtime shader recompilation will execute on the first frame after launch.");
     RTX_OPTION("rtx", bool, useLiveShaderEditMode, false, "When set to true shaders will be automatically recompiled when any shader file is updated (saved for instance) in addition to the usual manual recompilation trigger.");
     RTX_OPTION("rtx", float, emissiveIntensity, 1.0f, "");
@@ -231,8 +232,8 @@ namespace dxvk {
     RTX_OPTION("rtx", bool, useRayPortalVirtualInstanceMatching, true, "");
     RTX_OPTION("rtx", bool, enablePortalFadeInEffect, false, "");
 
-    RTX_OPTION_ENV("rtx", bool, useRTXDI, true, "DXVK_USE_RTXDI", "");
-    RTX_OPTION_ENV("rtx", bool, useReSTIRGI, true, "DXVK_USE_RESTIR_GI", "");
+    RTX_OPTION_ENV("rtx", bool, useRTXDI, true, "DXVK_USE_RTXDI", "Enable RTXDI to improve direct light quality.");
+    RTX_OPTION_ENV("rtx", bool, useReSTIRGI, true, "DXVK_USE_RESTIR_GI", "Enable ReSTIR GI to improve indirect light quality.");
     RTX_OPTION_ENV("rtx", UpscalerType, upscalerType, UpscalerType::DLSS, "DXVK_UPSCALER_TYPE", "Upscaling boosts performance with varying degrees of image quality tradeoff depending on the type of upscaler and the quality mode/preset.");
     RTX_OPTION("rtx", float, resolutionScale, 0.75f, "");
     RTX_OPTION("rtx", bool, forceCameraJitter, false, "");
@@ -275,6 +276,11 @@ namespace dxvk {
     RTX_OPTION("rtx", bool, enablePreviousTLAS, true, "");
     RTX_OPTION("rtx", float, sceneScale, 1, "Defines the ratio of rendering unit (1cm) to game unit, i.e. sceneScale = 1cm / GameUnit.");
 
+    // Anti-Culling Options
+    RTX_OPTION("rtx.antiCulling", bool, enableAntiCulling, false, "[Experimental] Enable Anti-Culling, allow extending life of objects outside the anti-culling frustum.");
+    // TODO: This should be a threshold of memory size
+    RTX_OPTION("rtx.antiCulling", uint32_t, numKeepInstances, 1000, "[Experimental] When enable anti-culling, the maximum number of RayTracing instances we hold in the BVH. If the total number of RT instances pass this threshold, instances pass their original life length (it may be extended after anti-culling) will be removed.");
+    RTX_OPTION("rtx.antiCulling", float, antiCullingFovScale, 1.15, "[Experimental] Scalar of the FOV of Anti-Culling Frustum.");
 
     // Resolve Options
     RTX_OPTION("rtx", uint8_t, primaryRayMaxInteractions, 32, "");
@@ -396,7 +402,8 @@ namespace dxvk {
     // Alpha Test/Blend Options
     RTX_OPTION("rtx", bool, enableAlphaBlend, true, "Enable rendering alpha blended geometry, used for partial opacity and other blending effects on various surfaces in many games.");
     RTX_OPTION("rtx", bool, enableAlphaTest, true, "Enable rendering alpha tested geometry, used for cutout style opacity in some games.");
-    RTX_OPTION("rtx", bool, enableCulling, true, "Enable culling for opaque objects. Objects with alpha blend or alpha test are not culled.");
+    RTX_OPTION("rtx", bool, enableCulling, true, "Enable front/backface culling for opaque objects. Objects with alpha blend or alpha test are not culled.");
+    RTX_OPTION("rtx", bool, enableCullingInSecondaryRays, false, "Enable front/backface culling for opaque objects. Objects with alpha blend or alpha test are not culled.  Only applies in secondary rays, defaults to off.  Generally helps with light bleeding from objects that aren't watertight.");
     RTX_OPTION("rtx", bool, enableEmissiveBlendEmissiveOverride, true, "Override typical material emissive information on draw calls with any emissive blending modes to emulate their original look more accurately.");
     RTX_OPTION("rtx", float, emissiveBlendOverrideEmissiveIntensity, 0.2f, "The emissive intensity to use when the emissive blend override is enabled. Adjust this if particles for example look overly bright globally.");
     RTX_OPTION("rtx", float, particleSoftnessFactor, 0.05f, "Multiplier for the view distance that is used to calculate the particle blending range.");
@@ -826,6 +833,10 @@ namespace dxvk {
       return animatedWaterTextures().find(h) != animatedWaterTextures().end();
     }
 
+    bool isAntiCullingTexture(const XXH64_hash_t& h) const {
+      return antiCullingTextures().find(h) != antiCullingTextures().end();
+    }
+
     bool getRayPortalTextureIndex(const XXH64_hash_t& h, std::size_t& index) const {
       const auto findResult = std::find(rayPortalModelTextureHashes().begin(), rayPortalModelTextureHashes().end(), h);
 
@@ -991,7 +1002,6 @@ namespace dxvk {
     // Alpha Test/Blend Options
     bool isAlphaBlendEnabled() const { return enableAlphaBlend(); }
     bool isAlphaTestEnabled() const { return enableAlphaTest(); }
-    bool isCullingEnabled() const { return enableCulling(); }
     bool isEmissiveBlendEmissiveOverrideEnabled() const { return enableEmissiveBlendEmissiveOverride(); }
     float getEmissiveBlendOverrideEmissiveIntensity() const { return emissiveBlendOverrideEmissiveIntensity(); }
     float getParticleSoftnessFactor() const { return particleSoftnessFactor(); }
