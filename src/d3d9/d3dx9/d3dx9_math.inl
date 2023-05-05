@@ -1640,7 +1640,11 @@ inline D3DXMATRIX* __stdcall D3DXMatrixMultiply(D3DXMATRIX* pOut, const D3DXMATR
 inline D3DXMATRIX* __stdcall D3DXMatrixInverse(D3DXMATRIX* pOut, FLOAT* pDeterminant, const D3DXMATRIX* pM)
 {
     // TODO mbaron
-    XMVECTOR d = XMLoadFloat4(reinterpret_cast<const XMFLOAT4*>(pDeterminant));
+    XMVECTOR d;
+    if (pDeterminant) {
+      XMVECTOR d = XMLoadFloat(reinterpret_cast<float*>(pDeterminant));
+    }
+    
     XMMATRIX m = XMLoadFloat4x4(reinterpret_cast<const XMFLOAT4X4*>(pM));
 
     XMFLOAT4X4 r;

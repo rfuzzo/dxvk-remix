@@ -104,7 +104,7 @@ void VisibleSet::RemoveAll() {
 }
 
 //-----------------------------------------------------------------------------
-
+#pragma optimize( "", off )
 void VisibleSet::Render(IDirect3DDevice9* device,
                         unsigned int vertex_size) {
 
@@ -122,7 +122,7 @@ void VisibleSet::Render(IDirect3DDevice9* device,
         device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, mesh->verts, 0, mesh->faces);
     }
 }
-
+#pragma optimize( "", on )
 void VisibleSet::Render(IDirect3DDevice9* device,
                         ID3DXEffect* effect,
                         ID3DXEffect* effectPool,

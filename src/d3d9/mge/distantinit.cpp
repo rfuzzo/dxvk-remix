@@ -198,7 +198,6 @@ const D3DVERTEXELEMENT9 GrassElem[] = {
 };
 
 
-
 bool DistantLand::init() {
     if (ready) {
         return true;
@@ -227,13 +226,13 @@ bool DistantLand::init() {
         return false;
     }
 
-    if (!initShadow()) {
+   /* if (!initShadow()) {
         return false;
     }
 
     if (!initWater()) {
         return false;
-    }
+    }*/
 
     if (!initLandscape()) {
         return false;
@@ -348,7 +347,7 @@ static bool createCoreEffectWithMods(const char *name, IDirect3DDevice9* device,
     ID3DXBuffer* errors;
     CoreModInclude includer;
     HRESULT hr;
-#ifdef MGE_D3DX9
+#ifndef MGE_D3DX9
     // Attempt to compile with core mods first
     hr = D3DXCreateEffectFromFile(device, path.c_str(), &*features.begin(), &includer, D3DXSHADER_OPTIMIZATION_LEVEL3|D3DXFX_LARGEADDRESSAWARE, effectPool, pEffect, &errors);
     if (hr == D3D_OK) {
@@ -808,7 +807,7 @@ public:
 };
 
 static size_t initDistantStaticsQT(DistantLand::WorldSpace& worldSpace, vector<DistantStatic>& distantStatics, vector<UsedDistantStatic>& uds);
-
+#pragma optimize( "", off )
 bool DistantLand::loadDistantStatics() {
     DWORD unused;
     HANDLE h;
@@ -867,7 +866,7 @@ bool DistantLand::loadDistantStatics() {
     auto file_buffer = std::make_unique<char[]>(file_size);
     ReadFile(h2, file_buffer.get(), file_size, &unused, NULL);
     membuf_reader reader(file_buffer.get());
-    CloseHandle(h2);
+   
 
     for (auto& i : distantStatics) {
         int numSubsets;
@@ -946,7 +945,7 @@ bool DistantLand::loadDistantStatics() {
     file_buffer.reset();
     errorTexture->Release();
 
-
+    CloseHandle(h2);
     // Texture memory reporting
     int texturesLoaded, texMemUsage;
     BSA::cacheStats(&texturesLoaded, &texMemUsage);
@@ -1064,14 +1063,14 @@ bool DistantLand::loadDistantStatics() {
         worldvis_memory_use += initDistantStaticsQT(*currentWorldSpace, distantStatics, worldSpaceStatics);
     }
 
-    CloseHandle(h);
+    //CloseHandle(h);
 
     // Log approximate memory use
     LOG::logline("-- Distant worldspaces memory use: %d MB", worldvis_memory_use / (1 << 20));
 
     return true;
 }
-
+#pragma optimize( "", on )
 static size_t initDistantStaticsQT(DistantLand::WorldSpace& worldSpace, vector<DistantStatic>& distantStatics, vector<UsedDistantStatic>& uds) {
     // Initialize quadtrees
     worldSpace.NearStatics = std::make_unique<QuadTree>();

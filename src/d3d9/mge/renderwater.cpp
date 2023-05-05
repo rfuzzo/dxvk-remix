@@ -222,6 +222,7 @@ void DistantLand::renderReflectedStatics(const D3DXMATRIX* view, const D3DXMATRI
 }
 
 void DistantLand::clearReflection() {
+#ifdef MGE_REFLECT
     auto mwBridge = MWBridge::get();
     IDirect3DSurface9* target;
     DWORD baseColour;
@@ -240,6 +241,7 @@ void DistantLand::clearReflection() {
     }
     device->ColorFill(target, 0, baseColour);
     target->Release();
+#endif // MGE_REFLECT
 }
 
 void DistantLand::simulateDynamicWaves() {
@@ -448,7 +450,9 @@ void DistantLand::renderWaterPlane() {
 
     D3DXMatrixTranslation(&m, eyePos.x, eyePos.y, MWBridge::get()->WaterLevel());
     effect->SetMatrix(ehWorld, &m);
+#ifdef MGE_REFLECT
     effect->SetTexture(ehTex0, texReflection);
+#endif // MGE_REFLECT
     effect->SetTexture(ehTex1, texWater);
 #ifdef MGE_SHADERS
     effect->SetTexture(ehTex2, texRefract);

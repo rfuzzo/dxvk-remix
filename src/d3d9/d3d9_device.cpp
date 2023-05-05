@@ -74,6 +74,7 @@
 #include "mge/mgeversion.h"
 #endif // MGE_XE
 
+
 namespace dxvk {
   static const bool s_explicitFlush = (env::getEnvVar("DXVK_EXPLICIT_FLUSH") == "1");
 
@@ -83,6 +84,7 @@ namespace dxvk {
   static bool isMainView, isStencilScene, isAmbientWhite;
   static DWORD stencilRef;
   static bool stage0Complete, isFrameComplete, isHUDComplete;
+  static bool stage0Active;
   static bool isWaterMaterial, waterDrawn, distantWater;
 
   static bool zoomSensSaved;
@@ -184,6 +186,7 @@ namespace dxvk {
     rendertargetNormal = true;
     isHUDready = false;
     isMainView = isStencilScene = isAmbientWhite = stage0Complete = isFrameComplete = isHUDComplete = false;
+    stage0Active = false;
     stencilRef = 0;
     isWaterMaterial = waterDrawn = false;
     D3DXMatrixIdentity(&camEffectsMatrix);
@@ -220,12 +223,15 @@ namespace dxvk {
     lightrs.active.clear();
 
     // Store active device in distant land, occurs on startup and after fullscreen alt-tab
+    // TODO mbaron
     DistantLand::device = this;
 
     // Patch splash screen minor issues
+#ifdef MGE_PATCH
     D3DVIEWPORT9 vp;
     GetViewport(&vp);
     MWBridge::get()->patchSplashScreen(vp.Width, vp.Height);
+#endif // MGE_PATCH
 #endif // MGE_XE
   }
 
@@ -243,7 +249,7 @@ namespace dxvk {
 #ifdef MGE_XE
   // --------------------------------------------------------
 
-#define ProxyInterface this
+//#define ProxyInterface this
 
   // initOnLoad
   // Initializes distant land
@@ -252,7 +258,7 @@ namespace dxvk {
     auto mwBridge = MWBridge::get();
 
     // Compose loading message from translated string
-    char buffer[64];
+    /*char buffer[64];
     const char* loadingMessage = *(const char**) mwBridge->getGMSTPointer(602);
     int firstWordLength = 0;
 
@@ -264,7 +270,7 @@ namespace dxvk {
     }
 
     std::snprintf(buffer, sizeof(buffer), "%.*s MGE XE...", firstWordLength, loadingMessage);
-    mwBridge->showLoadingBar(buffer, 95.0);
+    mwBridge->showLoadingBar(buffer, 95.0);*/
 
     // Initialize distant land
     if (DistantLand::init()) {
@@ -278,7 +284,7 @@ namespace dxvk {
     }
 
     // Clean up loading bar menu, otherwise it persists in the background
-    mwBridge->destroyLoadingBar();
+    //mwBridge->destroyLoadingBar();
 #ifdef FULL_MGE
     VideoPatch::start(DistantLand::device);
 #endif // FULL_MGE
@@ -712,10 +718,15 @@ namespace dxvk {
           HWND     hDestWindowOverride,
     const RGNDATA* pDirtyRegion) {
 #ifdef MGE_XE
+
+    
+
+
     auto mwBridge = MWBridge::get();
 
     // Load Morrowind's dynamic memory pointers
     if (!mwBridge->IsLoaded() && mwBridge->CanLoad()) {
+      mwBridge->InitStaticMemory();
       mwBridge->Load();
 
 #ifdef FULL_MGE
@@ -1831,6 +1842,7 @@ namespace dxvk {
     // NV-DXVK end
 
 #ifdef MGE_XE
+    // Remember if MW is rendering to back buffer
     if (pRenderTarget) {
       //IDirect3DSurface9* back;
       //GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back);
@@ -1932,6 +1944,12 @@ namespace dxvk {
     }*/
 
     if (mwBridge->IsLoaded() && rendertargetNormal) {
+      if (mwBridge->IsExterior() && !DistantLand::ready)
+      {
+          initOnLoad();
+      }
+
+
       if (!isHUDready) {
         // Initialize HUD
         StatusOverlay::init(this);
@@ -1987,6 +2005,7 @@ namespace dxvk {
       return D3DERR_INVALIDCALL;
 
 #ifdef MGE_XE
+#ifdef MGE_SHADERS
     if (DistantLand::ready && rendertargetNormal) {
       // The following Morrowind scenes get past the filters:
       // ~ Opaque meshes, plus alpha meshes with 'No Sorter' property (which should use alpha test)
@@ -2007,6 +2026,7 @@ namespace dxvk {
         // Blend close objects over distant land
         DistantLand::renderStageBlend();
       } else if (!isFrameComplete) {
+
         // Everything else except UI
         DistantLand::renderStage2();
 
@@ -2016,16 +2036,17 @@ namespace dxvk {
           DistantLand::renderStageWater();
           waterDrawn = true;
         }
+
       }
     }
-
+#endif // MGE_SHADERS
     if (isFrameComplete && isHUDready && !isHUDComplete) {
       // Capture post-UI screenshots here
-      DistantLand::checkCaptureScreenshot(true);
+     // DistantLand::checkCaptureScreenshot(true);
 
       // Render status overlay
-      StatusOverlay::setFPS(calcFPS());
-      StatusOverlay::show(this);
+     /* StatusOverlay::setFPS(calcFPS());
+      StatusOverlay::show(this);*/
 
       isHUDComplete = true;
     }
@@ -2221,7 +2242,8 @@ namespace dxvk {
         if (isMainView) {
           D3DXMATRIX view = *pMatrix;
           view *= camEffectsMatrix;
-          return ProxyInterface->SetTransform(State, &view);
+          //return ProxyInterface->SetTransform(State, &view);
+          return SetStateTransform(GetTransformIndex(State), pMatrix);
         }
       } else if (State == D3DTS_PROJECTION) {
         // Only screw with main scene projection
@@ -2234,7 +2256,7 @@ namespace dxvk {
             proj._22 *= Configuration.CameraEffects.zoom;
           }
 
-          return ProxyInterface->SetTransform(State, &proj);
+          return SetStateTransform(GetTransformIndex(State), pMatrix);
         }
       }
     }
@@ -3202,10 +3224,18 @@ namespace dxvk {
           UINT             PrimitiveCount) {
     ZoneScoped;
 
+    D3D9DeviceLock lock = LockDevice();
+
+    if (unlikely(m_state.vertexDecl == nullptr))
+      return D3DERR_INVALIDCALL;
+
+    if (unlikely(!PrimitiveCount))
+      return S_OK;
+
 #ifdef MGE_XE
     // Allow distant land to inspect draw calls
     bool isShadowStencil = isStencilScene && stencilRef <= 1;
-    if (DistantLand::ready && rendertargetNormal && isMainView && !isShadowStencil) {
+    if (DistantLand::ready && rendertargetNormal && isMainView && !isShadowStencil && !stage0Active) {
       rs.primType = PrimitiveType;
       rs.baseIndex = BaseVertexIndex;
       rs.minIndex = MinVertexIndex;
@@ -3214,9 +3244,11 @@ namespace dxvk {
       rs.primCount = PrimitiveCount;
 
       if (!stage0Complete && !isAmbientWhite) {
+        stage0Active = true;
         // At this point, only the sky is rendered in exteriors, or nothing in interiors
         DistantLand::renderStage0();
         stage0Complete = true;
+        stage0Active = false;
       }
 
       if (isWaterMaterial) {
@@ -3230,20 +3262,14 @@ namespace dxvk {
         }
       } else {
         // Let distant land record call and skip if signalled
+#ifndef FULL_MGE
         if (!DistantLand::inspectIndexedPrimitive(sceneCount, &rs, &frs, &lightrs)) {
           return D3D_OK;
         }
+#endif
       }
     }
 #endif // MGE_XE
-
-    D3D9DeviceLock lock = LockDevice();
-
-    if (unlikely(m_state.vertexDecl == nullptr))
-      return D3DERR_INVALIDCALL;
-
-    if (unlikely(!PrimitiveCount))
-      return S_OK;
 
     PrepareDraw(PrimitiveType);
 
@@ -3268,6 +3294,8 @@ namespace dxvk {
         cStartIndex,
         cBaseVertexIndex, 0);
     });
+
+
 
     return D3D_OK;
   }

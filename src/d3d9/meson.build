@@ -24,7 +24,10 @@ d3d9_src = [
   'd3dx9/d3dx9_util.cpp',
   'd3dx9/d3dx9_util.h',
   'd3dx9/d3dx9.h',
-#  'd3dx9/d3dx9_math.inl'
+#  'd3dx9/d3dx9_math.inl',
+
+  'mge/hooking_common.h',
+
   'mge/configuration.h',
   'mge/distantinit.cpp',
   'mge/distantland.cpp',
@@ -93,7 +96,7 @@ d3d9_src = [
   'support/pngsave.cpp',
   'support/pngsave.h',
   'support/rgbvector.h',
-#  'support/rgbvector.inl'
+#  'support/rgbvector.inl',
   'support/winheader.h',
   'support/log.cpp',
   'support/log.h',

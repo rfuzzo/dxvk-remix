@@ -13,6 +13,8 @@
 #endif // MGE_XE
 
 #include <windows.h>
+#include <TlHelp32.h>
+#include <Psapi.h>
 
 class D3DFE_PROCESSVERTICES;
 using PSGPERRORID = UINT;
@@ -39,8 +41,15 @@ namespace dxvk {
 }
 
 #ifdef MGE_XE
+
 extern "C" BOOL _stdcall DllMain(HANDLE hModule, DWORD reason, void* unused) {
   if (reason != DLL_PROCESS_ATTACH) {
+    return true;
+  }
+
+  if (!Configuration.LoadSettings()) {
+    dxvk::Logger::err("Error: MGE XE is not configured. MGE XE will be disabled for this session.");
+    isMW = false;
     return true;
   }
 

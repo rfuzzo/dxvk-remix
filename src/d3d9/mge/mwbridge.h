@@ -19,6 +19,7 @@ public:
     static MWBridge* get();
 
     // Connect to Morrowind memory
+    void InitStaticMemory();
     void Load();
 
     // Used to determine whether we have connected to Morrowind's dynamic memory yet
@@ -48,8 +49,8 @@ public:
     DWORD GetCurrentWeather();
     DWORD GetNextWeather();
     float GetWeatherRatio();
-    const RGBVECTOR* getCurrentWeatherSkyCol();
-    const RGBVECTOR* getCurrentWeatherFogCol();
+    RGBVECTOR getCurrentWeatherSkyCol();
+    RGBVECTOR getCurrentWeatherFogCol();
     DWORD getScenegraphFogCol();
     void setScenegraphFogCol(DWORD c);
     float getScenegraphFogDensity();
@@ -156,19 +157,18 @@ protected:
     DWORD m_version;
     bool m_loaded;
 
-    /// Sets pointers to static memory of Morrowind
-    void InitStaticMemory();
-
     /// Functions for reading and writing data at locations in Morrowind's memory
     DWORD read_dword(const DWORD dwAddress);
     WORD read_word(const DWORD dwAddress);
     BYTE read_byte(const DWORD dwAddress);
     float read_float(const DWORD dwAddress);
+#ifdef MGE_PATCH
     void write_dword(const DWORD dwAddress, DWORD dword);
     void write_word(const DWORD dwAddress, WORD word);
     void write_byte(const DWORD dwAddress, BYTE byte);
     void write_float(const DWORD dwAddress, float f);
     void write_ptr(const DWORD dwAddress, void* ptr);
+#endif // MGE_PATCH
 
     /// Pointers to Morrowind Memory
     DWORD
@@ -212,6 +212,8 @@ protected:
 
     // Other values
     DWORD dwAlwaysRunOffset;
+
+    HANDLE handle;
 };
 
 //-----------------------------------------------------------------------------

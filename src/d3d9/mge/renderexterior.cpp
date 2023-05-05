@@ -118,7 +118,7 @@ void DistantLand::renderDistantLandZ() {
     device->SetVertexDeclaration(LandDecl);
     visLand.Render(device, SIZEOFLANDVERT);
 }
-
+#pragma optimize( "", off )
 void DistantLand::cullDistantStatics(const D3DXMATRIX* view, const D3DXMATRIX* proj) {
     D3DXMATRIX ds_proj = *proj, ds_viewproj;
     D3DXVECTOR4 viewsphere(eyePos.x, eyePos.y, eyePos.z, 0);
@@ -156,7 +156,7 @@ void DistantLand::cullDistantStatics(const D3DXMATRIX* view, const D3DXMATRIX* p
 
     visDistant.SortByState();
 }
-
+#pragma optimize( "", on )
 void DistantLand::renderDistantStatics() {
     if (!MWBridge::get()->IsExterior()) {
         // Set clipping to stop large architectural meshes (that don't match exactly)

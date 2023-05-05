@@ -35,7 +35,7 @@ static std::unordered_map<std::string, MGEhud::hud_id> element_names;
 bool MGEhud::init(IDirect3DDevice9* d) {
     device = d;
     device->GetViewport(&vp);
-#ifdef MGE_D3DX9
+#ifndef MGE_D3DX9
     HRESULT hr = device->CreateVertexBuffer(max_elements * 4 * 32, D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY, fvfHUD, D3DPOOL_DEFAULT, &vbHUD, 0);
     if (hr != D3D_OK) {
         LOG::logline("!! Failed to create HUD verts");
@@ -300,7 +300,7 @@ void MGEhud::setEffect(hud_id hud, const char* effectPath) {
     Element* e = &elements[hud];
     char path[MAX_PATH];
     ID3DXBuffer* errors;
-#ifdef MGE_D3DX9
+#ifndef MGE_D3DX9
     // Clear current effect
     if (e->effect) {
         e->effect->Release();

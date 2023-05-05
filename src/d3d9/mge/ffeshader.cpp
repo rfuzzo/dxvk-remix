@@ -54,7 +54,7 @@ bool FixedFunctionShader::init(IDirect3DDevice9 * d, ID3DXEffectPool * pool) {
 
     // Create last resort shader when a generated shader fails somehow
     const D3DXMACRO generateDefault[] = { "FFE_ERROR_MATERIAL", "", 0, 0 };
-#ifdef MGE_D3DX9
+#ifndef MGE_D3DX9
     ID3DXEffect* effect;
     ID3DXBuffer* errors;
     HRESULT hr = D3DXCreateEffectFromFile(device, "Data Files\\shaders\\core\\XE FixedFuncEmu.fx", generateDefault, 0, D3DXSHADER_OPTIMIZATION_LEVEL3|D3DXFX_LARGEADDRESSAWARE, constantPool, &effect, &errors);
@@ -653,7 +653,7 @@ ID3DXEffect* FixedFunctionShader::generateMWShader(const ShaderKey& sk) {
         "FFE_FOG_APPLICATION", genFog.c_str(),
         0, 0
     };
-#ifdef MGE_D3DX9
+#ifndef MGE_D3DX9
     // Create effect while pooling constants with everything else
     ID3DXEffect* effectFFE;
     ID3DXBuffer* errors;

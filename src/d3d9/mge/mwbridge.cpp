@@ -5,6 +5,7 @@
 #pragma warning( disable : 4312 )
 
 #include "mwbridge.h"
+#include "hooking_common.h"
 
 #include <assert.h>
 #include <cmath>
@@ -32,7 +33,7 @@ MWBridge::MWBridge() {
     memset(this, 0, sizeof(*this));
     m_loaded = false;
     m_version = 0;
-    InitStaticMemory();
+    //InitStaticMemory();
 }
 
 //-----------------------------------------------------------------------------
@@ -47,6 +48,8 @@ MWBridge* MWBridge::get() {
 }
 
 //-----------------------------------------------------------------------------
+
+#define TARGET_PROGRAM_NAME "Morrowind.exe"
 
 void MWBridge::InitStaticMemory() {
     // Bloodmoon v. 1080
@@ -86,6 +89,15 @@ void MWBridge::InitStaticMemory() {
 //-----------------------------------------------------------------------------
 
 void MWBridge::Load() {
+    DWORD processID = FindPidByName(TARGET_PROGRAM_NAME);
+    check(processID);
+    HANDLE remoteProcessHandle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
+    check(remoteProcessHandle);
+    HMODULE base = GetBaseModuleForProcess(remoteProcessHandle);
+    check(base);
+
+    handle = remoteProcessHandle;
+    
     // Standard Morrowind
     DWORD dwTruRenderWidthOff = 0x48;
     DWORD dwHRotScaleOff = 0x50;
@@ -146,29 +158,39 @@ void MWBridge::Load() {
 //-----------------------------------------------------------------------------
 
 DWORD MWBridge::read_dword(const DWORD dwAddress) {
-    return *reinterpret_cast<DWORD*>(dwAddress);
+  //return *reinterpret_cast<DWORD*>(dwAddress);
+  DWORD buffer;
+  const auto ok = ReadProcessMemory(handle, (LPVOID) dwAddress, &buffer, 4, NULL);
+  //auto err = GetLastError();
+  return buffer;
 }
 
 //-----------------------------------------------------------------------------
 
 WORD MWBridge::read_word(const DWORD dwAddress) {
-    return *reinterpret_cast<WORD*>(dwAddress);
+    return *reinterpret_cast<WORD*>(read_dword(dwAddress));
 }
 
 //-----------------------------------------------------------------------------
 
 BYTE MWBridge::read_byte(const DWORD dwAddress) {
-    return *reinterpret_cast<BYTE*>(dwAddress);
+  BYTE buffer;
+  const auto ok = ReadProcessMemory(handle, (LPVOID) dwAddress, &buffer, 1, NULL);
+    //return *reinterpret_cast<BYTE*>(read_dword(dwAddress));
+  return buffer;
 }
 
 //-----------------------------------------------------------------------------
 
 float MWBridge::read_float(const DWORD dwAddress) {
-    return *reinterpret_cast<float*>(dwAddress);
+    float buffer;
+    const auto ok = ReadProcessMemory(handle, (LPVOID) dwAddress, &buffer, 4, NULL);
+    //return *reinterpret_cast<float*>(read_dword(dwAddress));
+    return buffer;
 }
 
 //-----------------------------------------------------------------------------
-
+#ifdef MGE_PATCH
 void MWBridge::write_dword(const DWORD dwAddress, DWORD dword) {
     *reinterpret_cast<DWORD*>(dwAddress) = dword;
 }
@@ -196,12 +218,13 @@ void MWBridge::write_float(const DWORD dwAddress, float f) {
 void MWBridge::write_ptr(const DWORD dwAddress, void* ptr) {
     *reinterpret_cast<void**>(dwAddress) = ptr;
 }
-
+#endif // MGE_PATCH
 //-----------------------------------------------------------------------------
 
 bool MWBridge::CanLoad() {
     // reads static address, so game doesn't need to be loaded
-    return read_dword(eEnviro) != 0;
+    //return read_dword(eEnviro) != 0;
+    return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -259,6 +282,7 @@ DWORD MWBridge::GetCrosshair2() {
 //-----------------------------------------------------------------------------
 
 void MWBridge::SetCrosshairEnabled(bool enabled) {
+#ifdef MGE_PATCH
     assert(m_loaded);
     if (enabled) {
         eCrosshair2 = GetCrosshair2();
@@ -269,17 +293,20 @@ void MWBridge::SetCrosshairEnabled(bool enabled) {
         write_byte(eCrosshair2, read_byte(eCrosshair2) | 0x01);
         write_byte(eCrosshair1, read_byte(eCrosshair1) | 0x01);
     }
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
 
 void MWBridge::ToggleCrosshair() {
+#ifdef MGE_PATCH
     assert(m_loaded);
     eCrosshair2 = GetCrosshair2();
     BYTE b = read_byte(eCrosshair2);
     BYTE b2 = read_byte(eCrosshair1);
     write_byte(eCrosshair2, b ^ 0x01);
     write_byte(eCrosshair1, b2 ^ 0x01);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -353,6 +380,7 @@ void MWBridge::SkipToNextTrack() {
 //-----------------------------------------------------------------------------
 
 void MWBridge::DisableMusic() {
+#ifdef MGE_PATCH
     assert(m_loaded);
     eMusicVol = GetMusicVol();
     write_float(eMusicVol, 0.01f);
@@ -362,6 +390,7 @@ void MWBridge::DisableMusic() {
     const mmVolumeProc mvp = (mmVolumeProc)eMusicVolFunc;
 
     mvp(eMusicVol - 0x294, 0.01f);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -395,16 +424,21 @@ float MWBridge::GetWeatherRatio() {
 
 //-----------------------------------------------------------------------------
 
-const RGBVECTOR* MWBridge::getCurrentWeatherSkyCol() {
+RGBVECTOR MWBridge::getCurrentWeatherSkyCol() {
     assert(m_loaded);
-    return (RGBVECTOR*)eCurSkyCol;
+    auto dword = read_dword(eCurSkyCol);
+    auto v = RGBVECTOR(dword);
+    return v;
 }
 
 //-----------------------------------------------------------------------------
 
-const RGBVECTOR* MWBridge::getCurrentWeatherFogCol() {
+RGBVECTOR MWBridge::getCurrentWeatherFogCol() {
     assert(m_loaded);
-    return (RGBVECTOR*)eCurFogCol;
+    auto dword = read_dword(eCurFogCol);
+    auto v = RGBVECTOR(dword);
+    return v;
+    //return (RGBVECTOR*) read_dword(eCurFogCol);
 }
 
 //-----------------------------------------------------------------------------
@@ -418,9 +452,11 @@ DWORD MWBridge::getScenegraphFogCol() {
 //-----------------------------------------------------------------------------
 
 void MWBridge::setScenegraphFogCol(DWORD c) {
+#ifdef MGE_PATCH
     DWORD addr = read_dword(eEnviro) + 0x9c;
     addr = read_dword(addr) + 0x1c;
     write_dword(addr, c);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -484,6 +520,7 @@ int MWBridge::GetWthrString(int wthr, int offset, char str[]) {
 //-----------------------------------------------------------------------------
 
 void MWBridge::SetWthrString(int wthr, int offset, char str[]) {
+#ifdef MGE_PATCH
     assert(m_loaded);
     DWORD addr = GetWthrStruct(wthr);
     int i = 0;
@@ -496,6 +533,7 @@ void MWBridge::SetWthrString(int wthr, int offset, char str[]) {
             write_byte(addr++, c);
         } while (c != 0);
     }
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -557,12 +595,14 @@ float MWBridge::GetViewDistance() {
 //-----------------------------------------------------------------------------
 
 void MWBridge::SetViewDistance(float dist) {
+#ifdef MGE_PATCH
     assert(m_loaded);
     write_float(eView0, dist);
     write_float(eView1, dist);
     write_float(eView2, dist);
     write_float(eView3, dist);
     write_float(eView4, dist);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -575,13 +615,16 @@ float MWBridge::GetAIDistance() {
 //-----------------------------------------------------------------------------
 
 void MWBridge::SetAIDistance(float dist) {
+#ifdef MGE_PATCH
     assert(m_loaded);
     write_float(eAI, dist);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
 
 void MWBridge::SetFOV(float screenFOV) {
+#ifdef MGE_PATCH
     assert(m_loaded);
 
     // Recalculate FOV values
@@ -611,7 +654,7 @@ void MWBridge::SetFOV(float screenFOV) {
             write_float(eShadowFOV+3*sizeof(float),-fovtanaspect);
         }
     }
-
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -636,10 +679,12 @@ BYTE MWBridge::GetSunVis() {
 
 // setSunriseSunset - Sets sunrise and sunset time and duration
 void MWBridge::setSunriseSunset(float rise_time, float rise_dur, float set_time, float set_dur) {
+#ifdef MGE_PATCH
     write_float(eSunriseHour, rise_time);
     write_float(eSunriseDuration, rise_dur);
     write_float(eSunsetHour, set_time);
     write_float(eSunsetDuration, set_dur);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -714,6 +759,7 @@ float MWBridge::WaterLevel() {
 //-----------------------------------------------------------------------------
 
 void MWBridge::HaggleMore(DWORD num) {
+#ifdef MGE_PATCH
     assert(m_loaded);
     auto updateProc = reinterpret_cast<void (__stdcall*)()>(eHaggleUpdate);
 
@@ -728,11 +774,13 @@ void MWBridge::HaggleMore(DWORD num) {
         write_dword(eHaggleAmount, d);
     }
     updateProc();
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
 
 void MWBridge::HaggleLess(DWORD num) {
+#ifdef MGE_PATCH
     assert(m_loaded);
     auto updateProc = reinterpret_cast<void (__stdcall*)()>(eHaggleUpdate);
 
@@ -747,6 +795,7 @@ void MWBridge::HaggleLess(DWORD num) {
         write_dword(eHaggleAmount, d);
     }
     updateProc();
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -977,6 +1026,7 @@ void* MWBridge::getPlayerCell() {
 
 // toggleRipples - Turns off ripple generation from all sources
 void MWBridge::toggleRipples(BOOL enabled) {
+#ifdef MGE_PATCH
     DWORD addr = eRipplesSwitch;
     DWORD code = read_dword(addr);
     if ((enabled && code == 0x33504D8B) || (!enabled && code == 0x3390C931)) {
@@ -986,6 +1036,7 @@ void MWBridge::toggleRipples(BOOL enabled) {
 
     VirtualMemWriteAccessor vw((void*)addr, 4);
     write_dword(addr, code);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -993,6 +1044,8 @@ void MWBridge::toggleRipples(BOOL enabled) {
 // markWaterNode
 // Edits the water material to set (normally unused) specular power to a recognizable value
 void MWBridge::markWaterNode(float k) {
+#ifdef MGE_PATCH
+
     // Get water node
     DWORD addr = read_dword(eEnviro);
     addr = read_dword(addr + 0xb4ec);
@@ -1010,6 +1063,7 @@ void MWBridge::markWaterNode(float k) {
     if (linknode) {
         write_float(read_dword(linknode) + 0x4c, k);
     }
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -1017,6 +1071,8 @@ void MWBridge::markWaterNode(float k) {
 // markMoonNodes
 // Edits the material for both moons to set (normally unused) specular power to a recognizable value
 void MWBridge::markMoonNodes(float k) {
+#ifdef MGE_PATCH
+
     DWORD addr = read_dword(eMaster);
     addr = read_dword(addr + 0x58);
 
@@ -1043,6 +1099,7 @@ void MWBridge::markMoonNodes(float k) {
     if (node && read_dword(node) == 0x75036c) {
         write_float(node + 0x4c, k);
     }
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -1050,23 +1107,27 @@ void MWBridge::markMoonNodes(float k) {
 // disableScreenshotFunc
 // Stops Morrowind from taking its own screenshots, or displaying an error message, when PrtScr is pressed
 void MWBridge::disableScreenshotFunc() {
+#ifdef MGE_PATCH
     DWORD addr = 0x41b08a;
 
     // Replace jz short with jmp (74 -> eb)
     VirtualMemWriteAccessor vw((void*)addr, 4);
     write_byte(addr, 0xeb);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
 
 // disableSunglare - Turns off the sunglare billboard and fullscreen glare that appears when looking at the sun
 void MWBridge::disableSunglare() {
+#ifdef MGE_PATCH
     DWORD addr = 0x4404fb;
 
     // Replace jz short with nop (74 xx -> 90 90)
     VirtualMemWriteAccessor vw((void*)addr, 4);
     write_byte(addr, 0x90);
     write_byte(addr+1, 0x90);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -1191,6 +1252,7 @@ float MWBridge::getUIScale() {
 // setUIScale - Configures the scaling of Morrowind's UI system.
 //              MWBridge is not required to be loaded for this function.
 void MWBridge::setUIScale(float scale) {
+#ifdef MGE_PATCH
     DWORD worldController = read_dword(eMaster);
     int w, h;
 
@@ -1230,6 +1292,7 @@ void MWBridge::setUIScale(float scale) {
 
     VirtualMemWriteAccessor vw((void*)addr, sizeof(patch));
     memcpy((void*)addr, patch, sizeof(patch));
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------
@@ -1254,6 +1317,7 @@ void MWBridge::patchUIConfigure(void (_stdcall* newfunc)()) {
 // patchSplashScreen - Patches the splash screen quad so that it renders without
 //                     gaps at the screen edge when multisampling is on.
 void MWBridge::patchSplashScreen(unsigned int width, unsigned int height) {
+#ifdef MGE_PATCH
     const float dx = -0.5f / width, dy = 0.5f / height;
 
     // Patch screen quad vertex coordinates with half pixel offset
@@ -1272,6 +1336,7 @@ void MWBridge::patchSplashScreen(unsigned int width, unsigned int height) {
     DWORD addr2 = 0x4595E1;
     VirtualMemWriteAccessor vw2((void*)addr2, 4);
     write_dword(addr2, 0);
+#endif // MGE_PATCH
 }
 
 //-----------------------------------------------------------------------------

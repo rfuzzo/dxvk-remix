@@ -34,7 +34,7 @@ void DistantLand::renderStage0() {
     // Set variables derived from current game state and camera configuration
     setView(&mwView);
     adjustFog();
-    setupCommonEffect(&mwView, &mwProj);
+    //setupCommonEffect(&mwView, &mwProj);
 #ifdef MGE_SHADERS
     FixedFunctionShader::updateLighting(lightSunMult, lightAmbMult);
 #endif // MGE_SHADERS
@@ -99,9 +99,11 @@ void DistantLand::renderStage0() {
             }
 
             // Update reflection
+#ifdef MGE_REFLECT
             if (mwBridge->CellHasWater()) {
                 renderWaterReflection(&mwView, &distProj);
             }
+#endif // MGE_REFLECT
 
             // Update water simulation
             if (Configuration.MGEFlags & DYNAMIC_RIPPLES) {
@@ -115,11 +117,11 @@ void DistantLand::renderStage0() {
             effect->SetMatrix(ehProj, &mwProj);
 
             // Save distant land only frame to texture
-            if (~Configuration.MGEFlags & NO_MW_MGE_BLEND) {
 #ifdef MGE_SHADERS
+            if (~Configuration.MGEFlags & NO_MW_MGE_BLEND) {
                 texDistantBlend = PostShaders::borrowBuffer(1);
-#endif // MGE_SHADERS
             }
+#endif // MGE_SHADERS
 
             // Restore render state
             stateSaved->Apply();
@@ -368,7 +370,7 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
     }
 
     // Sky/fog
-    bool isExpFog = (Configuration.MGEFlags & EXP_FOG) != 0;
+    /*bool isExpFog = (Configuration.MGEFlags & EXP_FOG) != 0;
     const RGBVECTOR* skyCol = mwBridge->CellHasWeather() ?  mwBridge->getCurrentWeatherSkyCol() : &horizonCol;
     effect->SetFloat(ehFogStart, isExpFog ? fogExpStart : fogStart);
     effect->SetFloat(ehFogRange, isExpFog ? fogExpDivisor : fogEnd);
@@ -378,7 +380,7 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
     effect->SetFloatArray(ehFogColNear, nearFogCol, 3);
     effect->SetFloatArray(ehFogColFar, horizonCol, 3);
     effect->SetFloat(ehNearViewRange, nearViewRange);
-    effect->SetFloat(ehNiceWeather, niceWeather);
+    effect->SetFloat(ehNiceWeather, niceWeather);*/
 
     if (ehOutscatter) {
         effect->SetFloatArray(ehOutscatter, atmOutscatter, 3);
@@ -399,7 +401,7 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
 
     // Other
     effect->SetFloatArray(ehFootPos, (float*) (ULONG_PTR) mwBridge->PlayerPositionPointer(), 3);
-    effect->SetFloat(ehTime, mwBridge->simulationTime());
+    //effect->SetFloat(ehTime, mwBridge->simulationTime());
 }
 
 // setScattering - Set scattering coefficients for atmospheric scattering shader
@@ -529,15 +531,15 @@ void DistantLand::adjustFog() {
     // Adjust Morrowind fog colour towards scatter colour if necessary
     if ((Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER) && mwBridge->CellHasWeather() && !mwBridge->IsUnderwater(eyePos.z)) {
         // Read unadjusted colour, as the scenegraph fog colour may not be updated during menu transitions
-        RGBVECTOR c0 = *mwBridge->getCurrentWeatherFogCol();
+        RGBVECTOR c0 = mwBridge->getCurrentWeatherFogCol();
         RGBVECTOR c1 = c0;
 
         // Simplified version of scattering from the shader
-        const RGBVECTOR* skyCol = mwBridge->getCurrentWeatherSkyCol();
+        const RGBVECTOR skyCol = mwBridge->getCurrentWeatherSkyCol();
         const D3DXVECTOR3 newSkyCol = {
-            float(lerp(skyCol->r, atmSkylightScatter.x, atmSkylightScatter.w)),
-            float(lerp(skyCol->g, atmSkylightScatter.y, atmSkylightScatter.w)),
-            float(lerp(skyCol->b, atmSkylightScatter.z, atmSkylightScatter.w))
+            float(lerp(skyCol.r, atmSkylightScatter.x, atmSkylightScatter.w)),
+            float(lerp(skyCol.g, atmSkylightScatter.y, atmSkylightScatter.w)),
+            float(lerp(skyCol.b, atmSkylightScatter.z, atmSkylightScatter.w))
         };
         const float sunaltitude = powf(1 + sunPos.z, 10);
         const float sunaltitude_a = 2.8f + 4.3f / sunaltitude;
@@ -643,8 +645,8 @@ void DistantLand::postProcess() {
         if ((Configuration.MGEFlags & USE_MENU_CACHING) && mwBridge->IsMenu()) {
 #ifdef MGE_SHADERS
             texDistantBlend = PostShaders::borrowBuffer(0);
-            isRenderCached = true;
 #endif // MGE_SHADERS
+            isRenderCached = true;
         }
 
         // Shadow map inset
