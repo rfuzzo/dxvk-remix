@@ -21,30 +21,50 @@
 */
 #include "rtx_texturemanager.h"
 #include "../../util/thread.h"
+#include "../../util/rc/util_rc_ptr.h"
 #include "dxvk_context.h"
 #include "dxvk_device.h"
+#include "dxvk_scoped_annotation.h"
 #include <chrono>
 
 #include "rtx_texture.h"
 #include "rtx_io.h"
 
 namespace dxvk {
+  void RtxTextureManager::work(Rc<ManagedTexture>& texture, Rc<DxvkContext>& ctx, Rc<DxvkCommandList>& cmd) {
+#ifdef WITH_RTXIO
+    if (m_kickoff || m_dropRequests) {
+      if (RtxIo::enabled()) {
+        RtxIo::get().flush(!m_dropRequests);
+      }
+      m_kickoff = false;
+    }
+#endif
+
+    const bool alwaysWait = RtxOptions::Get()->alwaysWaitForAsyncTextures();
+
+    // Wait until the next frame since the texture's been queued for upload, to relieve some pressure from frames
+    // where many new textures are created by the game. In that case, texture uploads slow down the main and CS threads,
+    // thus making the frame longer.
+    // Note: RTX IO will manage dispatches on its own and does not need to be cooled down.
+    if (!RtxIo::enabled()) {
+      while (!m_dropRequests && !hasStopped() && !alwaysWait && texture->frameQueuedForUpload >= m_device->getCurrentFrameId())
+        Sleep(1);
+    }
+
+    if (m_dropRequests) {
+      texture->state = ManagedTexture::State::kFailed;
+      texture->demote();
+    } else
+      uploadTexture(texture, ctx);
+  }
+
   RtxTextureManager::RtxTextureManager(const Rc<DxvkDevice>& device)
-  : m_device(device),
-    m_ctx(m_device->createContext()) {
+    : RenderProcessor(device.ptr(), "rtx-texture-manager")
+    , m_device(device) {
   }
 
   RtxTextureManager::~RtxTextureManager() {
-    {
-      std::unique_lock<dxvk::mutex> lock(m_queueMutex);
-      m_stopped.store(true);
-    }
-
-    m_thread.join();
-  }
-
-  void RtxTextureManager::start() {
-    m_thread = dxvk::thread([this]() { threadFunc(); });
   }
 
   void RtxTextureManager::scheduleTextureUpload(TextureRef& texture, Rc<DxvkContext>& immediateContext, bool allowAsync) {
@@ -88,12 +108,11 @@ namespace dxvk {
 
         int largestMipToPreload = managedTexture->futureImageDesc.mipLevels - uint32_t(preloadMips);
         if (largestMipToPreload < managedTexture->numLargeMips && managedTexture->linearImageDataLargeMips == nullptr) {
-          TextureUtils::loadTexture(managedTexture, m_device, m_ctx, TextureUtils::MemoryAperture::HOST, TextureUtils::MipsToLoad::LowMips);
+          TextureUtils::loadTexture(managedTexture, m_device, immediateContext, TextureUtils::MemoryAperture::HOST, TextureUtils::MipsToLoad::LowMips);
         }
         
         TextureUtils::promoteHostToVid(m_device, immediateContext, managedTexture, largestMipToPreload);
-      }
-      catch(const DxvkError& e) {
+      } catch(const DxvkError& e) {
         managedTexture->state = ManagedTexture::State::kFailed;
         Logger::err("Failed to create image for VidMem promotion!");
         Logger::err(e.message());
@@ -103,14 +122,10 @@ namespace dxvk {
     
     const bool asyncUpload = (preloadMips < managedTexture->futureImageDesc.mipLevels);
     if (asyncUpload) {
-      { std::unique_lock<dxvk::mutex> lock(m_queueMutex);
-        m_textureQueue.push(managedTexture);
-        ++m_texturesPending;
-        managedTexture->state = ManagedTexture::State::kQueuedForUpload;
-        managedTexture->frameQueuedForUpload = m_device->getCurrentFrameId();
-      }
-      
-      m_condOnAdd.notify_one();
+      managedTexture->state = ManagedTexture::State::kQueuedForUpload;
+      managedTexture->frameQueuedForUpload = m_device->getCurrentFrameId();
+
+      RenderProcessor::add(std::move(managedTexture));
     } else {
       // if we're not queueing for upload, make sure we don't hang on to low mip data
       if (managedTexture->linearImageDataLargeMips) {
@@ -124,28 +139,23 @@ namespace dxvk {
   }
 
   void RtxTextureManager::synchronize(bool dropRequests) {
-    ZoneScoped;
-
-    std::unique_lock<dxvk::mutex> lock(m_queueMutex);
+    ScopedCpuProfileZone();
     
     m_dropRequests = dropRequests;
 
-    m_condOnSync.wait(lock, [this] {
-      return !m_texturesPending.load();
-    });
+    RenderProcessor::sync();
 
     m_dropRequests = false;
   }
 
   void RtxTextureManager::kickoff() {
-    if (m_texturesPending == 0) {
+    if (m_itemsPending == 0) {
       m_kickoff = true;
       m_condOnAdd.notify_one();
     }
   }
 
-  int RtxTextureManager::calcPreloadMips(int mipLevels)
-  {
+  int RtxTextureManager::calcPreloadMips(int mipLevels) {
     if (RtxOptions::Get()->enableAsyncTextureUpload()) {
       return clamp(RtxOptions::Get()->asyncTextureUploadPreloadMips(), 0, mipLevels);
     } else {
@@ -153,78 +163,8 @@ namespace dxvk {
     }
   }
 
-  void RtxTextureManager::threadFunc() {
-    ZoneScoped;
-
-    env::setThreadName("rtx-texture-manager");
-
-    Rc<ManagedTexture> texture;
-
-    m_ctx->beginRecording(m_device->createCommandList());
-
-    try {
-      while (!m_stopped.load()) {
-        { std::unique_lock<dxvk::mutex> lock(m_queueMutex);
-          if (texture.ptr()) {
-            if (--m_texturesPending == 0)
-              m_condOnSync.notify_one();
-
-            texture = nullptr;
-          }
-
-          if (m_textureQueue.empty()) {
-            m_condOnAdd.wait(lock, [this] {
-              return !m_textureQueue.empty() || m_stopped.load() || m_kickoff;
-            });
-          }
-
-          if (m_stopped.load())
-            break;
-
-          if (!m_textureQueue.empty()) {
-            texture = std::move(m_textureQueue.front());
-            m_textureQueue.pop();
-          }
-        }
-
-#ifdef WITH_RTXIO
-        if (m_kickoff || m_dropRequests) {
-          if (RtxIo::enabled()) {
-            RtxIo::get().flush(!m_dropRequests);
-          }
-          m_kickoff = false;
-        }
-#endif
-
-        if (texture.ptr()) {
-          const bool alwaysWait = RtxOptions::Get()->alwaysWaitForAsyncTextures();
-
-          // Wait until the next frame since the texture's been queued for upload, to relieve some pressure from frames
-          // where many new textures are created by the game. In that case, texture uploads slow down the main and CS threads,
-          // thus making the frame longer.
-          // Note: RTX IO will manage dispatches on its own and does not need to be cooled down.
-          if (!RtxIo::enabled()) {
-            while (!m_dropRequests && !m_stopped && !alwaysWait && texture->frameQueuedForUpload >= m_device->getCurrentFrameId())
-              Sleep(1);
-          }
-
-          if (m_dropRequests) {
-            texture->state = ManagedTexture::State::kFailed;
-            texture->demote();
-          } else
-            uploadTexture(texture);
-        }
-      }
-    }
-    catch (const DxvkError& e) {
-      Logger::err("Exception on TextureManager thread!");
-      Logger::err(e.message());
-    }
-  }
-
-  void RtxTextureManager::uploadTexture(const Rc<ManagedTexture>& texture)
-  {
-    ZoneScoped;
+  void RtxTextureManager::uploadTexture(const Rc<ManagedTexture>& texture, Rc<DxvkContext>& ctx) {
+    ScopedCpuProfileZone();
 
     if (texture->state != ManagedTexture::State::kQueuedForUpload)
       return;
@@ -235,15 +175,14 @@ namespace dxvk {
         assert(!texture->linearImageDataLargeMips);
       }
 
-      TextureUtils::loadTexture(texture, m_device, m_ctx, TextureUtils::MemoryAperture::HOST, TextureUtils::MipsToLoad::LowMips);
+      TextureUtils::loadTexture(texture, m_device, ctx, TextureUtils::MemoryAperture::HOST, TextureUtils::MipsToLoad::LowMips);
 
       if (!RtxIo::enabled()) {
-        TextureUtils::promoteHostToVid(m_device, m_ctx, texture);
-        m_ctx->flushCommandList();
+        TextureUtils::promoteHostToVid(m_device, ctx, texture);
+        ctx->flushCommandList();
         texture->linearImageDataLargeMips.reset();
       }
-    }
-    catch (const DxvkError& e) {
+    } catch (const DxvkError& e) {
       texture->state = ManagedTexture::State::kFailed;
       Logger::err("Failed to finish texture promotion to VidMem!");
       Logger::err(e.message());
@@ -290,7 +229,11 @@ namespace dxvk {
   }
 
   uint32_t RtxTextureManager::updateMipMapSkipLevel(const Rc<DxvkContext>& context) {
-    // Check video memory
+    const unsigned int MiBPerGiB = 1024;
+    RtxContext* rtxContext = dynamic_cast<RtxContext*>(context.ptr());
+
+    // Check and reserve GPU memory
+
     VkPhysicalDeviceMemoryProperties memory = m_device->adapter()->memoryProperties();
     DxvkAdapterMemoryInfo memHeapInfo = m_device->adapter()->getMemoryHeapInfo();
     VkDeviceSize availableMemorySizeMib = 0;
@@ -306,28 +249,44 @@ namespace dxvk {
       availableMemorySizeMib = std::max(memSizeMib - memUsedMib, availableMemorySizeMib);
     }
 
-    const int GB = 1024;
-    RtxContext* rtxContext = dynamic_cast<RtxContext*>(context.ptr());
     if (rtxContext && !rtxContext->getResourceManager().isResourceReady()) {
-      // Assume raytracing resources like buffers occupy 2GB
-      const int pipelineResourceMemorySize = 2 * GB;
-      availableMemorySizeMib = std::max(int(availableMemorySizeMib) - pipelineResourceMemorySize, 0);
+      // Reserve space for various non-texture GPU resources (buffers, etc)
+
+      const auto adaptiveResolutionReservedGPUMemoryMiB =
+        static_cast<std::int32_t>(RtxOptions::Get()->adaptiveResolutionReservedGPUMemoryGiB() * MiBPerGiB);
+
+      // Note: int32_t used for clamping behavior on underflow.
+      availableMemorySizeMib = std::max(static_cast<std::int32_t>(availableMemorySizeMib) - adaptiveResolutionReservedGPUMemoryMiB, 0);
     }
 
-    // Check system memory
+    // Check and reserve CPU memory
+
     uint64_t availableSystemMemorySizeByte;
     if (dxvk::env::getAvailableSystemPhysicalMemory(availableSystemMemorySizeByte)) {
-      // This function is invoked during initialization, and the game may not have loaded other data.
-      // Reserve 2GB space for other game data.
+      // Reserve space for non-texture CPU resources
+      // Note: This is done as this function is invoked during initialization, and the game may not have loaded other data yet
+      // which would cause the textures to occasionally starve the rest of Remix for resources if some is not reserved.
       // TODO: The OpacityMicromapMemoryManager also allocate memory adaptively and it may eat up the memory
       // saved here. Need to figure out a way to control global memory consumption.
-      VkDeviceSize assetReservedSizeMib = std::max(static_cast<int>(availableSystemMemorySizeByte >> 20) - 2 * GB, 0);
+
+      const auto adaptiveResolutionReservedCPUMemoryMiB =
+        static_cast<std::int32_t>(RtxOptions::Get()->adaptiveResolutionReservedCPUMemoryGiB() * MiBPerGiB);
+      // Note: int32_t used for clamping behavior on underflow.
+      const VkDeviceSize assetReservedSizeMib =
+        std::max(static_cast<std::int32_t>(availableSystemMemorySizeByte >> 20u) - adaptiveResolutionReservedCPUMemoryMiB, 0);
+
       availableMemorySizeMib = std::min(availableMemorySizeMib, assetReservedSizeMib);
     }
 
-    int assetSizeMib = RtxOptions::Get()->assetEstimatedSizeGB() * GB;
+    // Determine the minimum mip level to load
+
+    unsigned int assetSizeMib = RtxOptions::Get()->assetEstimatedSizeGiB() * MiBPerGiB;
     for (m_minimumMipLevel = 0; assetSizeMib > availableMemorySizeMib && m_minimumMipLevel < 2; m_minimumMipLevel++) {
       // Skip one more mip map level
+      // Note: Removing the top-most mip reduces memory consumption by 25% if mips are assumed to be an infinite geometric
+      // series. In reality though they are not as they terminate at a 1x1 mip, so this is actually a conservative estimate
+      // which will overestimate how much memory a texture will take at times (fairly accurate to the ideal solution though
+      // across most mip levels except the very highest few where the missing contribution becomes significant).
       assetSizeMib /= 4;
     }
 

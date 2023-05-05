@@ -7,7 +7,9 @@ util_src = files([
   'util_matrix.cpp',
   'util_monitor.cpp',
   'util_window.cpp',
-  
+
+  'thread.cpp',
+
   'com/com_guid.cpp',
   'com/com_private_data.cpp',
 
@@ -34,6 +36,10 @@ util_src = files([
 
   'util_threadpool.h',
   'util_atomic_queue.h',
+
+  'util_renderprocessor.h',
+  
+  'util_watchdog.h',
 ])
 
 util_lib = static_library('util', util_src,

@@ -23,6 +23,11 @@ namespace dxvk {
     , m_gpeWorkers(popcnt_uint8(D3D9Rtx::kAllThreads), "geometry-processing") { }
 
   void D3D9Rtx::Initialize() {
+    m_vsVertexCaptureData = m_parent->CreateConstantBuffer(false,
+                                        sizeof(D3D9RtxVertexCaptureData),
+                                        DxsoProgramType::VertexShader,
+                                        DxsoConstantBuffers::VSVertexCaptureData);
+
     // Get constant buffer bindings from D3D9
     m_parent->EmitCs([](DxvkContext* ctx) {
       const uint32_t vsFixedFunctionConstants = computeResourceSlotId(DxsoProgramType::VertexShader, DxsoBindingType::ConstantBuffer, DxsoConstantBuffers::VSFixedFunction);
@@ -36,20 +41,20 @@ namespace dxvk {
 
   template<typename T>
   void D3D9Rtx::copyIndices(const uint32_t indexCount, T* pIndicesDst, const T* pIndices, uint32_t& minIndex, uint32_t& maxIndex) {
-    ZoneScoped;
+    ScopedCpuProfileZone();
 
     assert(indexCount >= 3);
 
     // Find min/max index
     {
-      ZoneScopedN("Find min/max");
+      ScopedCpuProfileZoneN("Find min/max");
 
       fast::findMinMax<T>(indexCount, pIndices, minIndex, maxIndex);
     }
 
     // Modify the indices if the min index is non-zero
     {
-      ZoneScopedN("Copy indices");
+      ScopedCpuProfileZoneN("Copy indices");
 
       if (minIndex != 0) {
         fast::copySubtract<T>(pIndicesDst, pIndices, indexCount, (T) minIndex);
@@ -61,7 +66,7 @@ namespace dxvk {
 
   template<typename T>
   DxvkBufferSlice D3D9Rtx::processIndexBuffer(const uint32_t indexCount, const uint32_t startIndex, const DxvkBufferSliceHandle& indexSlice, uint32_t& minIndex, uint32_t& maxIndex) {
-    ZoneScoped;
+    ScopedCpuProfileZone();
 
     const uint32_t indexStride = sizeof(T);
     const size_t numIndexBytes = indexCount * indexStride;
@@ -82,12 +87,34 @@ namespace dxvk {
     return stagingSlice;
   }
 
-  void D3D9Rtx::prepareVertexCapture(const int vertexIndexOffset, const uint32_t vertexCount) {
-    // struct {
-    //  float4 position;
-    //  float4 texcoord0;
-    // }
-    const size_t vertexCaptureDataSize = vertexCount * 2 * sizeof(Vector4);
+  void D3D9Rtx::prepareVertexCapture(RasterGeometry& geoData, const int vertexIndexOffset) {
+    ScopedCpuProfileZone();
+
+    struct CapturedVertex {
+      Vector4 position;
+      Vector4 texcoord0;
+      Vector4 normal0;
+    };
+
+    auto BoundShaderHas = [&](const D3D9CommonShader* shader, DxsoUsage usage, bool inOut)-> bool {
+      if (shader == nullptr)
+        return false;
+
+      const auto& sgn = inOut ? shader->GetIsgn() : shader->GetOsgn();
+      for (uint32_t i = 0; i < sgn.elemCount; i++) {
+        const auto& decl = sgn.elems[i];
+        if (decl.semantic.usageIndex == 0 && decl.semantic.usage == usage)
+          return true;
+      }
+      return false;
+    };
+
+    // Get common shaders to query what data we can capture
+    const D3D9CommonShader* vertexShader = d3d9State().vertexShader.ptr() != nullptr ? d3d9State().vertexShader->GetCommonShader() : nullptr;
+
+    // Known stride for vertex capture buffers
+    const uint32_t stride = sizeof(CapturedVertex);
+    const size_t vertexCaptureDataSize = geoData.vertexCount * stride;
 
     D3D9BufferSlice buf = m_parent->AllocTempBuffer<false, true>(vertexCaptureDataSize);
 
@@ -100,34 +127,57 @@ namespace dxvk {
     // Create underlying buffer view object
     Rc<DxvkBufferView> bufferView = m_parent->GetDXVKDevice()->createBufferView(buf.slice.buffer(), viewInfo);
 
-    // Bind the latest projection to world matrix...
-    // NOTE: May be better to move reverse transformation to end of frame, because this won't work if there hasnt been a FF draw this frame to scrape the matrix from...
-    const Matrix4& ObjectToProjection = d3d9State().transforms[GetTransformIndex(D3DTS_PROJECTION)] 
-                                      * d3d9State().transforms[GetTransformIndex(D3DTS_VIEW)] 
-                                      * d3d9State().transforms[GetTransformIndex(D3DTS_WORLD)];
-    const Matrix4& vkProjectionToObject = inverse(ObjectToProjection);
+    geoData.positionBuffer = RasterBuffer(buf.slice, 0, stride, VK_FORMAT_R32G32B32A32_SFLOAT);
+    assert(geoData.positionBuffer.offset() % 4 == 0);
 
-    m_parent->EmitCs([vkProjectionToObject,
-                      vertexIndexOffset,
-                      cBuffer = bufferView](DxvkContext* ctx) {
+    // Did we have a texcoord buffer bound for this draw?  Note, we currently get texcoord from the vertex shader output 
+    if (BoundShaderHas(vertexShader, DxsoUsage::Texcoord, false) && (!geoData.texcoordBuffer.defined() || !RtxGeometryUtils::isTexcoordFormatValid(geoData.texcoordBuffer.vertexFormat()))) {
+      // Known offset for vertex capture buffers
+      const uint32_t texcoordOffset = offsetof(CapturedVertex, texcoord0);
+      geoData.texcoordBuffer = RasterBuffer(buf.slice, texcoordOffset, stride, VK_FORMAT_R32G32_SFLOAT);
+      assert(geoData.texcoordBuffer.offset() % 4 == 0);
+    }
+
+    // Check if we should/can get normals.  We don't see a lot of games sending normals to pixel shader, so we must capture from the IA output (or Vertex input)
+    if (BoundShaderHas(vertexShader, DxsoUsage::Normal, true) && useVertexCapturedNormals()) {
+      const uint32_t normalOffset = offsetof(CapturedVertex, normal0);
+      geoData.normalBuffer = RasterBuffer(buf.slice, normalOffset, stride, VK_FORMAT_R32G32B32_SFLOAT);
+      assert(geoData.normalBuffer.offset() % 4 == 0);
+    } else {
+      geoData.normalBuffer = RasterBuffer();
+    }
+
+    auto constants = m_vsVertexCaptureData->allocSlice();
+
+    m_parent->EmitCs([cProjection = d3d9State().transforms[GetTransformIndex(D3DTS_PROJECTION)],
+                      cView = d3d9State().transforms[GetTransformIndex(D3DTS_VIEW)],
+                      cWorld = d3d9State().transforms[GetTransformIndex(D3DTS_WORLD)],
+                      cBuffer = bufferView,
+                      cConstantBuffer = m_vsVertexCaptureData,
+                      cConstants = constants,
+                      vertexIndexOffset](DxvkContext* ctx) {
       RtxContext* rtxCtx = static_cast<RtxContext*>(ctx);
-      const uint32_t bindingId = getVertexCaptureBufferSlot();
-      rtxCtx->bindResourceView(bindingId, nullptr, cBuffer);
-      rtxCtx->setVertexCaptureSlot(bindingId); // Might be overkill to pass this slot since it's essentially static... Might come in handy one day though.
 
       // Set constants required for vertex shader injection
-      ctx->setPushConstantBank(DxvkPushConstantBank::D3D9);
-      ctx->pushConstants(offsetof(D3D9RenderStateInfo, projectionToWorld), sizeof(Matrix4), &vkProjectionToObject);
-      ctx->pushConstants(offsetof(D3D9RenderStateInfo, baseVertex), sizeof(int), &vertexIndexOffset);
+
+      // Bind the latest projection to world matrix...
+      // NOTE: May be better to move reverse transformation to end of frame, because this won't work if there hasnt been a FF draw this frame to scrape the matrix from...
+      const Matrix4& ObjectToProjection = cProjection * cView * cWorld;
+
+      // Bind the new constants to buffer
+      ctx->invalidateBuffer(cConstantBuffer, cConstants);
+
+      D3D9RtxVertexCaptureData& data = *(D3D9RtxVertexCaptureData*) cConstants.mapPtr;
+      // Apply an inverse transform to get positions in object space (what renderer expects)
+      data.projectionToWorld = inverse(ObjectToProjection);
+      data.normalTransform = cWorld;
+      data.baseVertex = vertexIndexOffset;
+
+      rtxCtx->bindResourceView(getVertexCaptureBufferSlot(), nullptr, cBuffer);
     });
   }
 
   void D3D9Rtx::processVertices(const VertexContext vertexContext[caps::MaxStreams], int vertexIndexOffset, uint32_t idealTexcoordIndex, RasterGeometry& geoData) {
-    // For shader based drawcalls we also want to capture the vertex shader output
-    if (likely(m_parent->UseProgrammableVS() && RtxOptions::Get()->isVertexCaptureEnabled())) {
-        prepareVertexCapture(vertexIndexOffset, geoData.vertexCount);
-    }
-
     DxvkBufferSlice streamCopies[caps::MaxStreams] {};
 
     // Process vertex buffers from CPU
@@ -138,7 +188,7 @@ namespace dxvk {
       if (ctx.buffer.handle == VK_NULL_HANDLE)
         continue;
 
-      ZoneScopedN("Process Vertices");
+      ScopedCpuProfileZoneN("Process Vertices");
       const int32_t vertexOffset = ctx.offset + ctx.stride * vertexIndexOffset;
       const uint32_t numVertexBytes = ctx.stride * geoData.vertexCount;
 
@@ -263,6 +313,11 @@ namespace dxvk {
       return { RtxGeometryStatus::Ignored, false };
     }
 
+    if (m_parent->UseProgrammableVS() && !useVertexCapture()) {
+      ONCE(Logger::info("[RTX-Compatibility-Info] Skipping draw call with shader usage as vertex capture is not enabled."));
+      return { RtxGeometryStatus::Ignored, false };
+    }
+
     if (drawContext.PrimitiveCount == 0) {
       ONCE(Logger::info("[RTX-Compatibility-Info] Skipped invalid drawcall, primitive count was 0."));
       return { RtxGeometryStatus::Ignored, false };
@@ -270,8 +325,8 @@ namespace dxvk {
 
     // Only certain draw calls are worth raytracing
     if (!isPrimitiveSupported(drawContext.PrimitiveType)) {
-      ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Trying to raytrace an unsupported primitive topology [", drawContext.PrimitiveType, "]. Falling back to rasterization")));
-      return { RtxGeometryStatus::Rasterized, false };
+      ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Trying to raytrace an unsupported primitive topology [", drawContext.PrimitiveType, "]. Ignoring.")));
+      return { RtxGeometryStatus::Ignored, false };
     }
 
     // We only look at RT 0 currently.
@@ -288,6 +343,18 @@ namespace dxvk {
       return { RtxGeometryStatus::Ignored, false };
     }
 
+    // Attempt to detect shadow mask draws and ignore them
+    // Conditions: non-textured flood-fill draws into a small quad render target
+    if (((d3d9State().textureStages[0][D3DTSS_COLOROP] == D3DTOP_SELECTARG1 && d3d9State().textureStages[0][D3DTSS_COLORARG1] != D3DTA_TEXTURE) ||
+        (d3d9State().textureStages[0][D3DTSS_COLOROP] == D3DTOP_SELECTARG2 && d3d9State().textureStages[0][D3DTSS_COLORARG2] != D3DTA_TEXTURE))) {
+      auto rtExt = d3d9State().renderTargets[kRenderTargetIndex]->GetSurfaceExtent();
+      // If rt is a quad at least 4 times smaller than backbuffer it is likely a shadow mask
+      if (rtExt.width == rtExt.height && rtExt.width < m_activePresentParams.BackBufferWidth / 4) {
+        ONCE(Logger::info("[RTX-Compatibility-Info] Skipped shadow mask drawcall."));
+        return { RtxGeometryStatus::Ignored, false };
+      }
+    }
+
     if (!s_isDxvkResolutionEnvVarSet) {
       // NOTE: This can fail when setting DXVK_RESOLUTION_WIDTH or HEIGHT
       bool isPrimary = isRenderTargetPrimary(m_activePresentParams, d3d9State().renderTargets[kRenderTargetIndex]->GetCommonTexture()->Desc());
@@ -296,6 +363,17 @@ namespace dxvk {
         ONCE(Logger::info("[RTX-Compatibility-Info] Found a draw call to a non-primary render target. Falling back to rasterization"));
         return { RtxGeometryStatus::Rasterized, false };
       }
+    }
+
+    // Detect stencil shadow draws and ignore them
+    // Conditions: passingthrough stencil is enabled with increment or decrement z-fail action
+    if (d3d9State().renderStates[D3DRS_STENCILENABLE] == TRUE &&
+        d3d9State().renderStates[D3DRS_STENCILFUNC] == D3DCMP_ALWAYS &&
+        (d3d9State().renderStates[D3DRS_STENCILZFAIL] == D3DSTENCILOP_DECR || d3d9State().renderStates[D3DRS_STENCILZFAIL] == D3DSTENCILOP_INCR ||
+        d3d9State().renderStates[D3DRS_STENCILZFAIL] == D3DSTENCILOP_DECRSAT || d3d9State().renderStates[D3DRS_STENCILZFAIL] == D3DSTENCILOP_INCRSAT) &&
+        d3d9State().renderStates[D3DRS_ZWRITEENABLE] == FALSE) {
+      ONCE(Logger::info("[RTX-Compatibility-Info] Skipped stencil shadow drawcall."));
+      return { RtxGeometryStatus::Ignored, false };
     }
 
     // Check UI only to the primary render target
@@ -342,18 +420,21 @@ namespace dxvk {
     return false;
   }
 
-  void D3D9Rtx::internalPrepareDraw(const IndexContext& indexContext, const VertexContext vertexContext[caps::MaxStreams], const Draw& drawContext) {
-    ZoneScoped;
+  bool D3D9Rtx::internalPrepareDraw(const IndexContext& indexContext, const VertexContext vertexContext[caps::MaxStreams], const Draw& drawContext) {
+    ScopedCpuProfileZone();
 
     // RTX was injected => treat everything else as rasterized 
     if (m_rtxInjectTriggered) {
-      return;
+      return true;
     }
 
     auto [status, triggerRtxInjection] = makeDrawCallType(drawContext);
 
+    // When raytracing is enabled we want to completely remove the ignored drawcalls from further processing as early as possible
+    const bool processIgnoredDraws = !RtxOptions::Get()->enableRaytracing();
+
     if (status == RtxGeometryStatus::Ignored) {
-      return;
+      return processIgnoredDraws;
     }
 
     if (triggerRtxInjection) {
@@ -362,7 +443,7 @@ namespace dxvk {
       });
 
       m_rtxInjectTriggered = true;
-      return;
+      return true;
     }
 
     assert(status == RtxGeometryStatus::RayTraced || status == RtxGeometryStatus::Rasterized);
@@ -389,7 +470,7 @@ namespace dxvk {
       // Unlikely, but invalid
       if (maxIndex == minIndex) {
         ONCE(Logger::info("[RTX-Compatibility-Info] Skipped invalid drawcall, no triangles detected in index buffer."));
-        return;
+        return processIgnoredDraws;
       }
 
       geoData.vertexCount = maxIndex - minIndex + 1;
@@ -400,7 +481,7 @@ namespace dxvk {
 
     if (geoData.vertexCount == 0) {
       ONCE(Logger::info("[RTX-Compatibility-Info] Skipped invalid drawcall, no vertices detected."));
-      return;
+      return processIgnoredDraws;
     }
 
     // Fetch all the legacy state (colour modes, alpha test, etc...)
@@ -415,6 +496,13 @@ namespace dxvk {
     std::shared_future<SkinningData> futureSkinningData = processSkinning(geoData);
     if (RtxOptions::Get()->calculateMeshBoundingBox()) {
       geoData.futureBoundingBox = computeAxisAlignedBoundingBox(geoData);
+    } else {
+      geoData.futureBoundingBox = std::shared_future<AxisAlignBoundingBox>();
+    }
+
+    // For shader based drawcalls we also want to capture the vertex shader output
+    if (m_parent->UseProgrammableVS() && useVertexCapture()) {
+      prepareVertexCapture(geoData, vertexIndexOffset);
     }
 
     // Send it
@@ -429,10 +517,12 @@ namespace dxvk {
       rtxCtx->setGeometry(geoData, status);
       rtxCtx->setSkinningData(futureSkinningData);
     });
+
+    return true;
   }
 
   std::shared_future<SkinningData> D3D9Rtx::processSkinning(const RasterGeometry& geoData) {
-    ZoneScoped;
+    ScopedCpuProfileZone();
     if (d3d9State().renderStates[D3DRS_VERTEXBLEND] != D3DVBF_DISABLE) {
       bool hasBlendIndices = d3d9State().vertexDecl != nullptr ? d3d9State().vertexDecl->TestFlag(D3D9VertexDeclFlag::HasBlendIndices) : false;
       bool indexedVertexBlend = hasBlendIndices && d3d9State().renderStates[D3DRS_INDEXEDVERTEXBLENDENABLE];
@@ -458,7 +548,7 @@ namespace dxvk {
       const uint32_t vertexCount = geoData.vertexCount;
 
       return m_gpeWorkers.Schedule([cBoneMatrices = d3d9State().transforms, blendIndices, numBonesPerVertex, vertexCount]() -> SkinningData {
-        ZoneScoped;
+        ScopedCpuProfileZone();
         uint32_t numBones = numBonesPerVertex;
 
         int minBoneIndex = 0;
@@ -607,7 +697,7 @@ namespace dxvk {
     return FixedFunction ? texStageState.texcoordIndex : 0;
   }
 
-  void D3D9Rtx::PrepareDrawGeometryForRT(const bool indexed, const Draw& context) {
+  bool D3D9Rtx::PrepareDrawGeometryForRT(const bool indexed, const Draw& context) {
     IndexContext indices;
     if (indexed) {
       D3D9CommonBuffer* ibo = GetCommonBuffer(d3d9State().indices);
@@ -632,7 +722,7 @@ namespace dxvk {
     return internalPrepareDraw(indices, vertices, context);
   }
 
-  void D3D9Rtx::PrepareDrawUPGeometryForRT(const bool indexed, 
+  bool D3D9Rtx::PrepareDrawUPGeometryForRT(const bool indexed, 
                                            const D3D9BufferSlice& buffer,
                                            const D3DFORMAT indexFormat,
                                            const uint32_t indexSize,

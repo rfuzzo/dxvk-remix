@@ -3,7 +3,8 @@
 #include "d3d9_caps.h"
 #include "d3d9_device.h"
 #include "d3d9_util.h"
-#include "../tracy/Tracy.hpp"
+#include "../dxvk/dxvk_scoped_annotation.h"
+
 
 namespace dxvk {
 
@@ -59,6 +60,9 @@ namespace dxvk {
       : pDevice->GetPixelConstantLayout();
     m_shaders      = pModule->compile(*pDxsoModuleInfo, name, AnalysisInfo, constantLayout);
     m_isgn         = pModule->isgn();
+    // NV-DXVK start: expose shader outputs for vertex capture
+    m_osgn = pModule->osgn();
+    // NV-DXVK end
     m_usedSamplers = pModule->usedSamplers();
 
     // Shift up these sampler bits so we can just
@@ -102,7 +106,7 @@ namespace dxvk {
             VkShaderStageFlagBits ShaderStage,
       const DxsoModuleInfo*       pDxbcModuleInfo,
       const void*                 pShaderBytecode) {
-    ZoneScoped;
+    ScopedCpuProfileZone();
     DxsoReader reader(
       reinterpret_cast<const char*>(pShaderBytecode));
 
