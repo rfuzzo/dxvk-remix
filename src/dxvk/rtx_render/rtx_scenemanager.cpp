@@ -30,6 +30,7 @@
 #include "dxvk_buffer.h"
 #include "rtx_context.h"
 #include "rtx_options.h"
+#include "rtx_terrain_baker.h"
 
 #include <assert.h>
 
@@ -54,6 +55,7 @@ namespace dxvk {
     , m_bindlessResourceManager(device)
     , m_volumeManager(device)
     , m_pReplacer(new AssetReplacer(device))
+    , m_terrainBaker(new TerrainBaker())
     , m_gameCapturer(new GameCapturer(*this, device->getCommon()->metaExporter()))
     , m_cameraManager(device)
     , m_startTime(std::chrono::system_clock::now()) {
@@ -105,26 +107,49 @@ namespace dxvk {
   void SceneManager::initialize(Rc<DxvkContext> ctx) {
     ScopedCpuProfileZone();
     m_pReplacer->initialize(ctx);
+
+    auto& textureManager = m_device->getCommon()->getTextureManager();
+    textureManager.initialize(ctx);
+  }
+
+  Vector3 SceneManager::getSceneUp() {
+    return RtxOptions::Get()->zUp() ? Vector3(0.f, 0.f, 1.f) : Vector3(0.f, 1.f, 0.f);
+  }
+
+  Vector3 SceneManager::getSceneForward() {
+    return RtxOptions::Get()->zUp() ? Vector3(0.f, 1.f, 0.f) : Vector3(0.f, 0.f, 1.f);
+  }
+
+  Vector3 SceneManager::calculateSceneRight() {
+    return cross(getSceneForward(), getSceneUp());
+  }
+
+  Vector3 SceneManager::worldToSceneOrientedVector(const Vector3& worldVector) {
+    return RtxOptions::Get()->zUp() ? worldVector : Vector3(worldVector.x, worldVector.z, worldVector.y);
+  }
+
+  Vector3 SceneManager::sceneToWorldOrientedVector(const Vector3& sceneVector) {
+    // Same transform applies to and from
+    return worldToSceneOrientedVector(sceneVector);
   }
 
   void SceneManager::clear(Rc<DxvkContext> ctx, bool needWfi) {
     ScopedCpuProfileZone();
 
+    auto& textureManager = m_device->getCommon()->getTextureManager();
+
     // Only clear once after the scene disappears, to avoid adding a WFI on every frame through clear().
-    if (needWfi)
-    {
+    if (needWfi) {
       if (ctx.ptr())
         ctx->flushCommandList();
-      m_device->getCommon()->getTextureManager().synchronize(true);
+      textureManager.synchronize(true);
       m_device->waitForIdle();
     }
 
     // We still need to clear caches even if the scene wasn't rendered
-    m_textureCache.clear(); 
     m_bufferCache.clear();
     m_surfaceMaterialCache.clear();
     m_volumeMaterialCache.clear();
-    m_device->getCommon()->getTextureManager().demoteTexturesFromVidmem();
     
     // Called before instance manager's clear, so that it resets all tracked instances in Opacity Micromap manager at once
     if (m_opacityMicromapManager.get())
@@ -134,6 +159,8 @@ namespace dxvk {
     m_lightManager.clear();
     m_rayPortalManager.clear();
     m_drawCallCache.clear();
+    m_drawCallCache.clear();
+    textureManager.clear();
 
     m_previousFrameSceneAvailable = false;
   }
@@ -190,19 +217,9 @@ namespace dxvk {
       }
     }
 
-    // Demote high res material textures
-    if (m_device->getCurrentFrameId() > RtxOptions::Get()->numFramesToKeepMaterialTextures()) {
-      const size_t oldestFrame = m_device->getCurrentFrameId() - RtxOptions::Get()->numFramesToKeepMaterialTextures();
-      auto& entries = m_textureCache.getObjectTable();
-      for (auto& iter = entries.begin(); iter != entries.end(); iter++) {
-        const bool isDemotable = iter->getManagedTexture() != nullptr && iter->getManagedTexture()->canDemote;
-        if (isDemotable && iter->frameLastUsed < oldestFrame) {
-          iter->demote();
-        }
-      }
-    }
-
     // Perform GC on the other managers
+    auto& textureManager = m_device->getCommon()->getTextureManager();
+    textureManager.garbageCollection();
     m_instanceManager.garbageCollection();
     m_accelManager.garbageCollection();
     m_lightManager.garbageCollection();
@@ -225,7 +242,8 @@ namespace dxvk {
       if (input.hashes[HashComponents::Indices] == inOutGeometry.hashes[HashComponents::Indices]) {
         // Check if the vertex positions have changed, requiring a BVH refit
         if (input.hashes[HashComponents::VertexPosition] == inOutGeometry.hashes[HashComponents::VertexPosition]
-            && drawCallState.getSkinningState().boneHash == inOutGeometry.lastBoneHash) {
+         && input.hashes[HashComponents::VertexShader] == inOutGeometry.hashes[HashComponents::VertexShader]
+         && drawCallState.getSkinningState().boneHash == inOutGeometry.lastBoneHash) {
           result = ObjectCacheState::kUpdateInstance;
         } else {
           result = ObjectCacheState::kUpdateBVH;
@@ -364,6 +382,9 @@ namespace dxvk {
       m_bufferCache.clear();
 
     m_materialTextureSampler = nullptr;
+
+    if (TerrainBaker::needsTerrainBaking())
+      m_terrainBaker->onFrameEnd(m_device->getCurrentFrameId());
   }
 
   std::unordered_set<XXH64_hash_t> uniqueHashes;
@@ -554,6 +575,10 @@ namespace dxvk {
         transforms.objectToWorld = transforms.objectToWorld * replacement.replacementToObject;
         transforms.objectToView = transforms.objectToView * replacement.replacementToObject;
         
+        // Mesh replacements dont support these.
+        transforms.textureTransform = Matrix4();
+        transforms.texgenMode = TexGenMode::None;
+
         const DrawCallState newDrawCallState{
           *replacement.geometryData, // Note: Geometry Data replaced
           input->getMaterialData(), // Note: Original legacy material data preserved
@@ -794,28 +819,8 @@ namespace dxvk {
       return;
     }
 
-    // If theres valid texture backing this ref, then skip
-    if (!inputTexture.isValid())
-      return;
-
-    // Track this texture
-    textureIndex = m_textureCache.track(inputTexture);
-
-    // Fetch the texture object from cache
-    TextureRef& cachedTexture = m_textureCache.at(textureIndex);
-
-    // If there is a pending promotion, schedule its upload
-    if (cachedTexture.isPromotable()) {
-      Rc<DxvkContext> dxvkCtx = ctx;
-      m_device->getCommon()->getTextureManager().scheduleTextureUpload(cachedTexture, dxvkCtx, allowAsync);
-    }
-
-    if (patchSampler) {
-      // Patch the sampler entry
-      cachedTexture.sampler = m_materialTextureSampler;
-    }
-
-    cachedTexture.frameLastUsed = ctx->getDevice()->getCurrentFrameId();
+    auto& textureManager = m_device->getCommon()->getTextureManager();
+    textureManager.addTexture(ctx, inputTexture, (patchSampler ? m_materialTextureSampler : inputTexture.sampler), allowAsync, textureIndex);
   }
 
   uint64_t SceneManager::processDrawCallState(Rc<DxvkContext> ctx, Rc<DxvkCommandList> cmd, const DrawCallState& drawCallState, const MaterialData* overrideMaterialData) {
@@ -1056,13 +1061,6 @@ namespace dxvk {
     return instance ? instance->getId() : UINT64_MAX;
   }
 
-  void SceneManager::finalizeAllPendingTexturePromotions() {
-    ScopedCpuProfileZone();
-    for (auto& texture : m_textureCache.getObjectTable())
-      if (texture.isPromotable())
-        texture.finalizePendingPromotion();
-  }
-
   void SceneManager::addLight(const D3DLIGHT9& light) {
     ScopedCpuProfileZone();
     // Attempt to convert the D3D9 light to RT
@@ -1098,7 +1096,8 @@ namespace dxvk {
 
     garbageCollection();
     
-    m_bindlessResourceManager.prepareSceneData(cmdList, getTextureTable(), getBufferTable());
+    auto& textureManager = m_device->getCommon()->getTextureManager();
+    m_bindlessResourceManager.prepareSceneData(cmdList, textureManager.getTextureTable(), getBufferTable());
 
     // If there are no instances, we should do nothing!
     if (m_instanceManager.getActiveCount() == 0) {
@@ -1149,7 +1148,7 @@ namespace dxvk {
     m_instanceManager.createViewModelInstances(ctx, cmdList, m_cameraManager, m_rayPortalManager);
     m_instanceManager.createPlayerModelVirtualInstances(ctx, m_cameraManager, m_rayPortalManager);
 
-    m_accelManager.mergeInstancesIntoBlas(ctx, cmdList, execBarriers, m_textureCache.getObjectTable(), m_cameraManager, m_instanceManager, m_opacityMicromapManager.get(), frameTimeSecs);
+    m_accelManager.mergeInstancesIntoBlas(ctx, cmdList, execBarriers, textureManager.getTextureTable(), m_cameraManager, m_instanceManager, m_opacityMicromapManager.get(), frameTimeSecs);
 
     // Call on the other managers to prepare their GPU data for the current scene
     m_accelManager.prepareSceneData(ctx, cmdList, execBarriers, m_instanceManager);
@@ -1227,12 +1226,12 @@ namespace dxvk {
     // Update stats
     m_device->statCounters().setCtr(DxvkStatCounter::RtxBlasCount, AccelManager::getBlasCount());
     m_device->statCounters().setCtr(DxvkStatCounter::RtxBufferCount, m_bufferCache.getActiveCount());
-    m_device->statCounters().setCtr(DxvkStatCounter::RtxTextureCount, m_textureCache.getActiveCount());
+    m_device->statCounters().setCtr(DxvkStatCounter::RtxTextureCount, textureManager.getTextureTable().size());
     m_device->statCounters().setCtr(DxvkStatCounter::RtxInstanceCount, m_instanceManager.getActiveCount());
     m_device->statCounters().setCtr(DxvkStatCounter::RtxSurfaceMaterialCount, m_surfaceMaterialCache.getActiveCount());
     m_device->statCounters().setCtr(DxvkStatCounter::RtxVolumeMaterialCount, m_volumeMaterialCache.getActiveCount());
     m_device->statCounters().setCtr(DxvkStatCounter::RtxLightCount, m_lightManager.getActiveCount());
-    
+
     if (m_device->getCurrentFrameId() == m_beginUsdExportFrameNum) {
       m_gameCapturer->toggleMultiFrameCapture();
     }

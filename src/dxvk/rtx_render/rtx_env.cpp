@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -19,31 +19,20 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
-#pragma once
 
-#include <pxr/usd/sdf/path.h>
-#include <pxr/usd/usd/tokens.h>
+#include "rtx_env.h"
 
-namespace lss {
+#include <Windows.h>
+#include "rtx_options.h"
 
-const pxr::TfToken gTokLights("lights");
-const pxr::TfToken gTokMesh("mesh");
-const pxr::TfToken gTokSkel("skel");
-const pxr::TfToken gTokPose("pose");
-const pxr::TfToken gTokMeshes("meshes");
-const pxr::TfToken gTokLooks("Looks");
-const pxr::TfToken gTokScope("Scope");
-const pxr::TfToken gTokInstances("instances");
-const pxr::TfToken gVisibilityInherited("inherited");
-const pxr::TfToken gVisibilityInvisible("invisible");
-const pxr::TfToken gZ("Z");
-const pxr::TfToken gY("Y");
+namespace dxvk {
 
-const pxr::SdfPath gStageRootPath("/");
-const pxr::SdfPath gRootNodePath("/RootNode");
-const pxr::SdfPath gRootLightsPath = gRootNodePath.AppendChild(gTokLights);
-const pxr::SdfPath gRootMeshesPath = gRootNodePath.AppendChild(gTokMeshes);
-const pxr::SdfPath gRootMaterialsPath = gRootNodePath.AppendChild(gTokLooks);
-const pxr::SdfPath gRootInstancesPath = gRootNodePath.AppendChild(gTokInstances);
+  void messageBox(const char* text, const char* caption, uint32_t type) {
+    // Note: Respect the blocking dialog box disable flag when attempting to open this message box to not
+    // cause blocking on user input when not desired.
+    if (!RtxOptions::Get()->disableBlockingDialogBoxes()) {
+      MessageBox(NULL, text, caption, type);
+    }
+  }
 
 }

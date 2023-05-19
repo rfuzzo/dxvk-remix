@@ -69,7 +69,7 @@ namespace dxvk {
       m_sceneManager    (device),
       m_rtResources     (device),
       m_rtInitializer   (device),
-      m_rtTextureUploader(device),
+      m_textureManager(device),
       m_dummyResources  (device), 
       m_volumeIntegrate(device),
       m_volumeFilter(device),
@@ -279,11 +279,15 @@ namespace dxvk {
     }
 
     RtxTextureManager& getTextureManager() {
-      return m_rtTextureUploader;
+      return m_textureManager;
     }
 
     const OpacityMicromapManager* getOpacityMicromapManager() {
       return m_sceneManager.getOpacityMicromapManager();
+    }
+
+    const TerrainBaker& getTerrainBaker() {
+      return m_sceneManager.getTerrainBaker();
     }
 
     AssetExporter& metaExporter() {
@@ -309,11 +313,15 @@ namespace dxvk {
     Lazy<DxvkMetaResolveObjects>      m_metaResolve;
     Lazy<DxvkMetaPackObjects>         m_metaPack;
 
+
+    // Note: SceneManager(...) retrieves m_exporter from DxvkObjects(), so m_exporter has to be initialized prior to m_sceneManager
+    Lazy<AssetExporter>               m_exporter;
+
     // RTX Management
     SceneManager       m_sceneManager;
     Resources          m_rtResources;
     RtxInitializer     m_rtInitializer;
-    RtxTextureManager  m_rtTextureUploader;
+    RtxTextureManager  m_textureManager;
 
     // RTX Shaders
     Active<DxvkVolumeIntegrate>             m_volumeIntegrate;
@@ -347,7 +355,6 @@ namespace dxvk {
     Active<RtxImageUtils>                   m_imageUtils;
     Active<DxvkPostFx>                      m_postFx;
     Lazy<RtxReflex>                         m_reflex;
-    Lazy<AssetExporter>                     m_exporter;
   };
 
 }

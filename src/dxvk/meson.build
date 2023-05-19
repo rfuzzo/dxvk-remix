@@ -215,6 +215,8 @@ dxvk_src = files([
   'rtx_render/rtx_asset_exporter.h',
   'rtx_render/rtx_asset_replacer.cpp',
   'rtx_render/rtx_asset_replacer.h',
+  'rtx_render/rtx_terrain_baker.cpp',
+  'rtx_render/rtx_terrain_baker.h',
   'rtx_render/rtx_camera.cpp',
   'rtx_render/rtx_camera.h',
   'rtx_render/rtx_cameramanager.cpp',
@@ -296,6 +298,8 @@ dxvk_src = files([
   'rtx_render/rtx_asset_package.h',
   'rtx_render/rtx_shader_manager.cpp',
   'rtx_render/rtx_shader_manager.h',
+  'rtx_render/rtx_env.cpp',
+  'rtx_render/rtx_env.h',
 
   'rtx_render/rtx_hashing.cpp',
   'rtx_render/rtx_hashing.h',

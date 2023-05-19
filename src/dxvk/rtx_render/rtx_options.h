@@ -140,7 +140,11 @@ namespace dxvk {
                   "These textures will be ignored when attempting to determine the desired textures from a draw to use for ray tracing.");
     RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, skyBoxTextures, {},
                   "Textures on draw calls used for the sky or are otherwise intended to be very far away from the camera at all times (no parallax).\n"
-                  "Any draw calls using a texture in this list will be treated as sky and rendered as such in a manner different from typical geometry.");
+                  "Any draw calls using a texture in this list will be treated as sky and rendered as such in a manner different from typical geometry.");    
+    RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, skyBoxGeometries, {},
+                  "Geometries from draw calls used for the sky or are otherwise intended to be very far away from the camera at all times (no parallax).\n"
+                  "Any draw calls using a geometry hash in this list will be treated as sky and rendered as such in a manner different from typical geometry.\n"
+                  "The geometry hash being used for sky detection is based off of the asset hash rule, see: \"rtx.geometryAssetHashRuleString\".");
     RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, ignoreTextures, {},
                   "Textures on draw calls that should be ignored.\n"
                   "Any draw call using an ignore texture will be skipped and not ray traced, useful for removing undesirable rasterized effects or geometry not suitable for ray tracing.");
@@ -182,7 +186,8 @@ namespace dxvk {
                   "Textures on draw calls used for geometric decals with arbitrary topology that are already offset from the base geometry.\n"
                   "These materials will be blended over the materials underneath them when decal material blending is enabled.\n"
                   "Unlike typical decals however these decals have no offset applied to them due assuming the offset is already being done by whatever is passing data to Remix.");
-    RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, terrainTextures, {}, "");
+    RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, terrainTextures, {}, "Albedo textures that are baked blended together to form a unified terrain texture used during ray tracing.\n"
+                                                                                "Put albedo textures into this category if the game renders terrain as a blend of multiple textures.");
     RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, cutoutTextures, {}, "");
     RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, opacityMicromapIgnoreTextures, {}, "");
     RW_RTX_OPTION("rtx", std::unordered_set<XXH64_hash_t>, animatedWaterTextures, {},
@@ -193,7 +198,7 @@ namespace dxvk {
                   "[Experimental] Textures that are forced to extend life length when anti-culling is enabled.\n"
                   "Some games use different culling methods we can't fully match, use this option to manually add textures to force extend their life when anti-culling fails.");
 
-    RW_RTX_OPTION("rtx", std::string, geometryGenerationHashRuleString, "positions,indices,texcoords,geometrydescriptor,vertexlayout",
+    RW_RTX_OPTION("rtx", std::string, geometryGenerationHashRuleString, "positions,indices,texcoords,geometrydescriptor,vertexlayout,vertexshader",
                   "Defines which asset hashes we need to generate via the geometry processing engine.");
     RW_RTX_OPTION("rtx", std::string, geometryAssetHashRuleString, "positions,indices,geometrydescriptor",
                   "Defines which hashes we need to include when sampling from replacements and doing USD capture.");
@@ -261,7 +266,7 @@ namespace dxvk {
 
     RTX_OPTION("rtx", uint32_t, minPrimsInStaticBLAS, 1000, "");
     RTX_OPTION("rtx", uint32_t, maxPrimsInMergedBLAS, 50000, "");
-    
+
     // Camera
     RTX_OPTION("rtx", bool, shakeCamera, false, "");
     RTX_OPTION("rtx", CameraAnimationMode, cameraAnimationMode, CameraAnimationMode::CameraShake_Pitch, "");
@@ -297,7 +302,7 @@ namespace dxvk {
     RTX_OPTION("rtx", float, uniqueObjectDistance, 300.f, "[cm]");
     RTX_OPTION_FLAG("rtx", UIType, showUI, UIType::None, RtxOptionFlags::NoSave | RtxOptionFlags::NoReset, "0 = Don't Show, 1 = Show Simple, 2 = Show Advanced.");
     RTX_OPTION_FLAG("rtx", bool, defaultToAdvancedUI, false, RtxOptionFlags::NoReset, "");
-    RTX_OPTION("rtx", bool, showUICursor, false, "");
+    RTX_OPTION("rtx", bool, showUICursor, true, "");
     RTX_OPTION_FLAG("rtx", bool, blockInputToGameInUI, true, RtxOptionFlags::NoSave, "");
     RTX_OPTION("rtx", bool, hideSplashMessage, false,
                "A flag to disable the splash message indicating how to use Remix from appearing when the application starts.\n"
@@ -338,7 +343,7 @@ namespace dxvk {
     RTX_OPTION("rtx", uint32_t, numFramesToKeepBLAS, 4, "");
     RTX_OPTION("rtx", uint32_t, numFramesToKeepLights, 100, ""); // NOTE: This was the default we've had for a while, can probably be reduced...
     RTX_OPTION("rtx", uint32_t, numFramesToKeepGeometryData, 5, "");
-    RTX_OPTION("rtx", uint32_t, numFramesToKeepMaterialTextures, 30, "");
+    RTX_OPTION("rtx", uint32_t, numFramesToKeepMaterialTextures, 5, "");
     RTX_OPTION("rtx", bool, enablePreviousTLAS, true, "");
     RTX_OPTION("rtx", float, sceneScale, 1, "Defines the ratio of rendering unit (1cm) to game unit, i.e. sceneScale = 1cm / GameUnit.");
 
@@ -407,9 +412,9 @@ namespace dxvk {
                "This is typically used to reduce flickering artifacts resulting from refraction on surfaces like glass leveraging normal maps as often the denoiser is too aggressive with disocclusion checks frame to frame when DLSS or other camera jittering is in use.");
 
     // Shader Execution Reordering Options
-    RTX_OPTION_FULL("rtx", bool, isShaderExecutionReorderingSupported, false, "DXVK_IS_SHADER_EXECUTION_REORDERING_SUPPORTED", RtxOptionFlags::NoSave, ""); // To be removed / not written to docs
-    RTX_OPTION("rtx", bool, enableShaderExecutionReorderingInPathtracerGbuffer, false, "");
-    RTX_OPTION("rtx", bool, enableShaderExecutionReorderingInPathtracerIntegrateIndirect, true, "");
+    RTX_OPTION_ENV("rtx", bool, isShaderExecutionReorderingSupported, true, "DXVK_IS_SHADER_EXECUTION_REORDERING_SUPPORTED", "Enables support of Shader Execution Reordering (SER) if it is supported by the target HW and SW."); 
+    RTX_OPTION("rtx", bool, enableShaderExecutionReorderingInPathtracerGbuffer, false, "(Note: Hard disabled in shader code) Enables Shader Execution Reordering (SER) in GBuffer Raytrace pass if SER is supported.");
+    RTX_OPTION("rtx", bool, enableShaderExecutionReorderingInPathtracerIntegrateIndirect, true, "Enables Shader Execution Reordering (SER) in Integrate Indirect pass if SER is supported.");
 
     // Path Options
     RTX_OPTION("rtx", bool, enableRussianRoulette, true,
@@ -668,7 +673,7 @@ namespace dxvk {
       friend class RtxOptions;
       friend class ImGUI;
       bool isSupported = false;
-      RTX_OPTION_ENV("rtx.opacityMicromap", bool, enable, true, "DXVK_ENABLE_OPACITY_MICROMAP", "");
+      RTX_OPTION_ENV("rtx.opacityMicromap", bool, enable, false, "DXVK_ENABLE_OPACITY_MICROMAP", "");
     } opacityMicromap;
 
     RTX_OPTION("rtx", ReflexMode, reflexMode, ReflexMode::LowLatency, "Reflex mode selection, enabling it helps minimize input latency, boost mode may further reduce latency by boosting GPU clocks in CPU-bound cases."); // default to low-latency (not boost)
@@ -702,20 +707,10 @@ namespace dxvk {
                "This minimum will always be considered as long as force high resolution replacement textures is not enabled, meaning that with or without adaptive resolution replacement textures enabled this setting will always enforce a minimum mipmap restriction.\n"
                "Generally this should be changed to reduce the texture quality globally if desired to reduce CPU and GPU memory usage and typically should be controlled by some sort of texture quality setting.\n"
                "Additionally, this setting must be set at startup and changing it will not take effect at runtime.");
-    RTX_OPTION("rtx", uint, adaptiveResolutionReservedCPUMemoryGiB, 2,
-               "The amount of CPU memory in gibibytes to reserve away from consideration for adaptive resolution replacement textures.\n"
-               "This value should only be changed to reflect the estimated amount of memory Remix itself consumes on the CPU (aside from texture loading) and should not be changed otherwise.\n"
-               "Only relevant when force high resolution replacement textures is disabled and adaptive resolution replacement textures is enabled. See asset estimated size parameter for more information.\n");
     RTX_OPTION("rtx", uint, adaptiveResolutionReservedGPUMemoryGiB, 2,
                "The amount of GPU memory in gibibytes to reserve away from consideration for adaptive resolution replacement textures.\n"
                "This value should only be changed to reflect the estimated amount of memory Remix itself consumes on the GPU (aside from texture loading, mostly from rendering-related buffers) and should not be changed otherwise.\n"
                "Only relevant when force high resolution replacement textures is disabled and adaptive resolution replacement textures is enabled. See asset estimated size parameter for more information.\n");
-    RTX_OPTION("rtx", uint, assetEstimatedSizeGiB, 2,
-               "The estimated size in gibibytes of all of the assets expected to be loaded typically in a standard scene.\n"
-               "This value is important to set on more production-ready games as it will allow texture loading to calculate which mip levels to load up to in order to ensure memory usage does not exceed CPU or GPU memory limits.\n"
-               "Note that setting this value too high may force textures to load as lower quality than they may be able to if there is enough memory available (as this is just an estimate), so it is better to estimate a lower size than a higher one.\n"
-               "Finally, this value is only relevant when force high resolution replacement textures is disabled and adaptive resolution replacement textures is enabled.\n"
-               "For more information the mip calculations in the code should be referenced, but generally this value is used in conjunction with the estimated GPU pipeline resource and CPU game data sizes as well as the general CPU/GPU free memory to determine which mip level will fit in the remaining space.");
     RTX_OPTION_ENV("rtx", bool, enableAsyncTextureUpload, true, "DXVK_ASYNC_TEXTURE_UPLOAD", "");
     RTX_OPTION_ENV("rtx", bool, alwaysWaitForAsyncTextures, false, "DXVK_WAIT_ASYNC_TEXTURES", "");
     RTX_OPTION("rtx", int,  asyncTextureUploadPreloadMips, 8, "");
@@ -741,7 +736,9 @@ namespace dxvk {
     RTX_OPTION("rtx", float, captureMeshNormalDelta, 0.3f, "Inter-frame normal min delta warrants new time sample.");
     RTX_OPTION("rtx", float, captureMeshTexcoordDelta, 0.3f, "Inter-frame texcoord min delta warrants new time sample.");
     RTX_OPTION("rtx", float, captureMeshColorDelta, 0.3f, "Inter-frame color min delta warrants new time sample.");
+    RTX_OPTION("rtx", float, captureMeshBlendWeightDelta, 0.01f, "Inter-frame blend weight min delta warrants new time sample.");
 
+    // Note: call needsMeshBoundingBox() to check if BBOX calculation is enabled
     RTX_OPTION("rtx", bool, calculateMeshBoundingBox, false, "Calculate bounding box for every mesh.");
 
     RTX_OPTION("rtx", bool, resetBufferCacheOnEveryFrame, true, "");
@@ -768,6 +765,14 @@ namespace dxvk {
 
     RTX_OPTION_FLAG("rtx", XXH64_hash_t, highlightedTexture, kEmptyHash, RtxOptionFlags::NoSave, "Hash of a texture that should be highlighted.");
 
+    RTX_OPTION("rtx", bool, useBuffersDirectly, true, "When enabled Remix will use the incoming vertex buffers directly where possible instead of copying data. Note: setting the d3d9.allowDiscard to False will disable this option.");
+    RTX_OPTION("rtx", bool, alwaysCopyDecalGeometries, true, "When set to True tells the geometry processor to always copy decals geometry. This is an optimization flag to experiment with when rtx.useBuffersDirectly is True.");
+
+    // Automation Options
+    RTX_OPTION_ENV("rtx.automation", bool, disableBlockingDialogBoxes, false, "DXVK_AUTOMATION_DISABLE_BLOCKING_DIALOG_BOXES",
+                   "Disables various blocking blocking dialog boxes (such as popup windows) requiring user interaction when set to true, otherwise uses default behavior when set to false.\n"
+                   "This option is typically meant for automation-driven execution of Remix where such dialog boxes if present may cause the application to hang due to blocking waiting for user input.");
+
   public:
     LegacyMaterialDefaults legacyMaterial;
     OpaqueMaterialOptions opaqueMaterialOptions;
@@ -783,11 +788,6 @@ namespace dxvk {
     const TranslucentMaterialDefaults translucentMaterialDefaults{};
     const RayPortalMaterialDefaults rayPortalMaterialDefaults{};
     const SharedMaterialDefaults sharedMaterialDefaults{};
-
-    // Initial values of corresponding options to prevent them changing at runtime.
-    bool initialForceHighResolutionReplacementTextures;
-    bool initialEnableAdaptiveResolutionReplacementTextures;
-    uint initialMinReplacementTextureMipMapLevel;
 
     RTX_OPTION("rtx", float, effectLightIntensity, 1.f, "");
     RTX_OPTION("rtx", float, effectLightRadius, 5.f, "");
@@ -979,14 +979,6 @@ namespace dxvk {
         enableReplacementMaterialsRef() = false;
       }
 
-      // Cache these values so they don't change during runtime.
-      // Note: This must be done as calculations in the texture system currently invoke mip calculation code multiple times
-      // and assume the calculated minimum mip level will remain the same. Therefore any options which alter this calculation
-      // need to remain constant at runtime unfortunately.
-      initialForceHighResolutionReplacementTextures = forceHighResolutionReplacementTextures();
-      initialEnableAdaptiveResolutionReplacementTextures = enableAdaptiveResolutionReplacementTextures();
-      initialMinReplacementTextureMipMapLevel = minReplacementTextureMipMapLevel();
-
       const VirtualKeys& kDefaultRemixMenuKeyBinds { VirtualKey{VK_MENU},VirtualKey{'X'} };
       m_remixMenuKeyBinds = options.getOption<VirtualKeys>("rtx.remixMenuKeyBinds", kDefaultRemixMenuKeyBinds);
 
@@ -1030,6 +1022,10 @@ namespace dxvk {
 
     bool isSkyboxTexture(const XXH64_hash_t& h) const {
       return skyBoxTextures().find(h) != skyBoxTextures().end();
+    }
+
+    bool isSkyboxGeometry(const XXH64_hash_t& h) const {
+      return skyBoxGeometries().find(h) != skyBoxGeometries().end();
     }
 
     bool shouldIgnoreTexture(const XXH64_hash_t& h) const {
@@ -1160,7 +1156,7 @@ namespace dxvk {
     uint32_t getNumFramesToKeepBLAS() const { return numFramesToKeepBLAS(); }
     uint32_t getNumFramesToKeepLights() const { return numFramesToKeepLights(); }
     uint32_t getNumFramesToPutLightsToSleep() const { return numFramesToKeepLights() /2; }
-    float getMeterToWorldUnitScale() const { return 100.f * getSceneScale(); } // T-Rex world unit is in 1cm 
+    float getMeterToWorldUnitScale() const { return 100.f * getSceneScale(); } // RTX Remix world unit is in 1cm 
     float getSceneScale() const { return sceneScale(); }
 
     // Render Pass Modes
@@ -1186,6 +1182,9 @@ namespace dxvk {
     bool areIndirectTranslucentShadowsEnabled() const { return enableIndirectTranslucentShadows(); }
     float getResolveTransparencyThreshold() const { return resolveTransparencyThreshold(); }
     float getResolveOpaquenessThreshold() const { return resolveOpaquenessThreshold(); }
+    
+    // Returns shared enablement composed of multiple enablement inputs
+    bool needsMeshBoundingBox();
 
     // PSR Options
     bool isPSRREnabled() const { return enablePSRR(); }
@@ -1315,6 +1314,8 @@ namespace dxvk {
     float getCaptureMeshNormalDelta() const { return captureMeshNormalDelta(); }
     float getCaptureMeshTexcoordDelta() const { return captureMeshTexcoordDelta(); }
     float getCaptureMeshColorDelta() const { return captureMeshColorDelta(); }
+    float getCaptureMeshBlendWeightDelta() const { return captureMeshBlendWeightDelta(); }
+    
     
     bool isUseVirtualShadingNormalsForDenoisingEnabled() const { return useVirtualShadingNormalsForDenoising(); }
     bool isResetDenoiserHistoryOnSettingsChangeEnabled() const { return resetDenoiserHistoryOnSettingsChange(); }
@@ -1333,9 +1334,5 @@ namespace dxvk {
     std::string getCurrentDirectory() const;
 
     bool shouldUseObsoleteHashOnTextureUpload() const { return useObsoleteHashOnTextureUpload(); }
-
-    bool getInitialForceHighResolutionReplacementTextures() const { return initialForceHighResolutionReplacementTextures; }
-    bool getInitialEnableAdaptiveResolutionReplacementTextures() const { return initialEnableAdaptiveResolutionReplacementTextures; }
-    uint getInitialMinReplacementTextureMipMapLevel() const { return initialMinReplacementTextureMipMapLevel; }
   };
 }

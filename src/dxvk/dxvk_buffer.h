@@ -51,6 +51,17 @@ namespace dxvk {
     
     /// Allowed access patterns
     VkAccessFlags access;
+
+    // NV-DXVK start: Add additional alignment requirements for the Buffer's allocation.
+    /// The required alignment the buffer should be allocated with. Note this will potentially
+    /// increase the alignment over the memory requirements of the buffer which may be detrimental
+    /// to some types of allocations (as it may waste more space), but this alignment may be nessecary
+    /// when the buffer's usage/stages/access flags do not ensure an alignment in the Vulkan specification
+    /// for an intended use case. This alignment must be within the maximum alignment any Vulkan object
+    /// is required to be aligned to though, so do not use for any alignments other than things specified
+    /// by the specification.
+    VkDeviceSize requiredAlignmentOverride = 1;
+    // NV-DXVK end
   };
   
   
@@ -313,8 +324,20 @@ namespace dxvk {
 
     VkDeviceAddress getDeviceAddress();
 
-  protected:
+    // NV-DXVK start: buffer clones for orphaned slices
+    /**
+     * \brief Creates a clone of the buffer
+     *
+     * Clones may be used in rendering like normal buffers but must NOT
+     * be used to allocate slices since they do not own memory and
+     * actual buffer objects.
+     *
+     * Note: do NOT use unless you know exactly what this method does!
+     */
+    Rc<DxvkBuffer> clone();
+    // NV-DXVK end
 
+  protected:
     DxvkDevice*             m_device;
     DxvkBufferCreateInfo    m_info;
     DxvkMemoryAllocator*    m_memAlloc;
@@ -326,7 +349,7 @@ namespace dxvk {
 
     uint32_t                m_vertexStride = 0;
     uint32_t                m_lazyAlloc = false;
-    
+
     sync::Spinlock m_freeMutex;
     sync::Spinlock m_swapMutex;
     
@@ -354,7 +377,25 @@ namespace dxvk {
       VkDeviceSize sliceCount, DxvkMemoryStats::Category category) const;
 
     VkDeviceSize computeSliceAlignment() const;
-    
+
+  // NV-DXVK start: buffer clones for orphaned slices
+  private:
+    /**
+     * \brief Clonning constructor
+     *
+     * To be used ONLY for cloning.
+     */ 
+    DxvkBuffer(DxvkBuffer& parent);
+
+    /**
+     * \brief Parent buffer
+     *
+     * When buffer is a clone, parent member
+     * will be referencing the parent buffer object.
+     * Parent is a nullptr otherwise.
+     */
+    Rc<DxvkBuffer> m_parent;
+  // NV-DXVK end
   };
   
   

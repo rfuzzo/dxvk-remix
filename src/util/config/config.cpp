@@ -846,8 +846,8 @@ namespace dxvk {
       { "rtx.enableNearPlaneOverride",                          "True"  },
       { "rtx.nativeMipBias",                                    "0.9"   },
       { "rtx.upscalingMipBias",                                 "-0.4"  },
-      { "rtx.assetEstimatedSizeGiB",                            "12"    },
       { "rtx.legacyMaterial.roughnessConstant",                 "0.1"   },
+      { "rtx.opacityMicromap.enable",                           "True"  },
       // TODO (REMIX-656): Remove this once we can transition content to new hash
       { "rtx.geometryGenerationHashRuleString", "positions,"
                                                 "indices,"
@@ -1076,6 +1076,14 @@ namespace dxvk {
     ss << value.x << ", " << value.y << ", " << value.z;
     return ss.str();
   }
+
+  // NV-DXVK start: added a variant
+  std::string Config::generateOptionString(const Vector4& value) {
+    std::stringstream ss;
+    ss << value.x << ", " << value.y << ", " << value.z << ", " << value.w;
+    return ss.str();
+  }
+  // NV-DXVK end
 
   std::string Config::generateOptionString(const Tristate& value) {
     switch (value) {

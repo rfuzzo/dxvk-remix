@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -21,29 +21,12 @@
 */
 #pragma once
 
-#include <pxr/usd/sdf/path.h>
-#include <pxr/usd/usd/tokens.h>
+#include <cstdint>
 
-namespace lss {
+namespace dxvk {
 
-const pxr::TfToken gTokLights("lights");
-const pxr::TfToken gTokMesh("mesh");
-const pxr::TfToken gTokSkel("skel");
-const pxr::TfToken gTokPose("pose");
-const pxr::TfToken gTokMeshes("meshes");
-const pxr::TfToken gTokLooks("Looks");
-const pxr::TfToken gTokScope("Scope");
-const pxr::TfToken gTokInstances("instances");
-const pxr::TfToken gVisibilityInherited("inherited");
-const pxr::TfToken gVisibilityInvisible("invisible");
-const pxr::TfToken gZ("Z");
-const pxr::TfToken gY("Y");
-
-const pxr::SdfPath gStageRootPath("/");
-const pxr::SdfPath gRootNodePath("/RootNode");
-const pxr::SdfPath gRootLightsPath = gRootNodePath.AppendChild(gTokLights);
-const pxr::SdfPath gRootMeshesPath = gRootNodePath.AppendChild(gTokMeshes);
-const pxr::SdfPath gRootMaterialsPath = gRootNodePath.AppendChild(gTokLooks);
-const pxr::SdfPath gRootInstancesPath = gRootNodePath.AppendChild(gTokInstances);
+  // Displays a blocking Windows message box with specified text, caption and type. Note this function only supports
+  // ASCII strings for the text and caption currently.
+  void messageBox(const char* text, const char* caption, std::uint32_t type);
 
 }

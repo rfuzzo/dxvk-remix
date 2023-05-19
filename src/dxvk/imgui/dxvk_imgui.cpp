@@ -37,6 +37,7 @@
 #include "rtx_render/rtx_camera.h"
 #include "rtx_render/rtx_context.h"
 #include "rtx_render/rtx_options.h"
+#include "rtx_render/rtx_terrain_baker.h"
 #include "dxvk_image.h"
 #include "../util/rc/util_rc_ptr.h"
 #include "../util/util_math.h"
@@ -946,19 +947,21 @@ namespace dxvk {
     RtxOptions::Get()->updateGraphicsPresets();
 
     // Note: These settings aren't updated in updateGraphicsPresets since they are not in the RtxOptions class.
+    // Todo: Improve this preset override functionality and ideally move it into the updateGraphicsPresets section somehow [REMIX-1482]
     if (RtxOptions::Get()->graphicsPreset() == GraphicsPreset::Ultra ||
         RtxOptions::Get()->graphicsPreset() == GraphicsPreset::High) {
       rtxdiRayQuery.enableRayTracedBiasCorrectionRef() = true;
       restirGiRayQuery.biasCorrectionModeRef() = ReSTIRGIBiasCorrection::PairwiseRaytrace;
       restirGiRayQuery.useReflectionReprojectionRef() = true;
       common->metaComposite().enableStochasticAlphaBlendRef() = true;
+      postFx.enableRef() = true;
     } else if (RtxOptions::Get()->graphicsPreset() == GraphicsPreset::Medium ||
                RtxOptions::Get()->graphicsPreset() == GraphicsPreset::Low) {
       rtxdiRayQuery.enableRayTracedBiasCorrectionRef() = false;
       restirGiRayQuery.biasCorrectionModeRef() = ReSTIRGIBiasCorrection::BRDF;
-      postFx.enableRef() = false;
       restirGiRayQuery.useReflectionReprojectionRef() = false;
       common->metaComposite().enableStochasticAlphaBlendRef() = false;
+      postFx.enableRef() = false;
     }
 
     // Path Tracing Settings
@@ -2017,6 +2020,8 @@ namespace dxvk {
       }
       ImGui::Unindent();
     }
+
+    common->getTerrainBaker().showImguiSettings();
 
     if (ImGui::CollapsingHeader("Player Model", collapsingHeaderClosedFlags)) {
       ImGui::Indent();

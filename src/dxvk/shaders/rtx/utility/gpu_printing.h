@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -21,29 +21,21 @@
 */
 #pragma once
 
-#include <pxr/usd/sdf/path.h>
-#include <pxr/usd/usd/tokens.h>
+static const int16_t kInvalidThreadIndex = 32767; // ~ int16_t max
 
-namespace lss {
+struct GpuPrintBufferElement
+{
+  u16vec2 threadIndex;    // Thread index of the written data
+  uint frameIndex;        // Frame index when the data was written
+  
+  float4 writtenData;
 
-const pxr::TfToken gTokLights("lights");
-const pxr::TfToken gTokMesh("mesh");
-const pxr::TfToken gTokSkel("skel");
-const pxr::TfToken gTokPose("pose");
-const pxr::TfToken gTokMeshes("meshes");
-const pxr::TfToken gTokLooks("Looks");
-const pxr::TfToken gTokScope("Scope");
-const pxr::TfToken gTokInstances("instances");
-const pxr::TfToken gVisibilityInherited("inherited");
-const pxr::TfToken gVisibilityInvisible("invisible");
-const pxr::TfToken gZ("Z");
-const pxr::TfToken gY("Y");
+#ifndef __cplusplus
+  [mutating]
+#endif
+  void invalidate() {
+    threadIndex.x = kInvalidThreadIndex;
+  }
 
-const pxr::SdfPath gStageRootPath("/");
-const pxr::SdfPath gRootNodePath("/RootNode");
-const pxr::SdfPath gRootLightsPath = gRootNodePath.AppendChild(gTokLights);
-const pxr::SdfPath gRootMeshesPath = gRootNodePath.AppendChild(gTokMeshes);
-const pxr::SdfPath gRootMaterialsPath = gRootNodePath.AppendChild(gTokLooks);
-const pxr::SdfPath gRootInstancesPath = gRootNodePath.AppendChild(gTokInstances);
-
-}
+  bool isValid() { return threadIndex.x != kInvalidThreadIndex; }
+};

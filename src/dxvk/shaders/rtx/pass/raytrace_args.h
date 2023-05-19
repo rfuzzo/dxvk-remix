@@ -52,7 +52,7 @@ struct TerrainArgs {
 
   uint maxCascadeLevel;
   float lastCascadeScale;
-  uint2 pad1;
+  uint2 pad0;
 };
 
 // Constant buffer
@@ -130,6 +130,8 @@ struct RaytraceArgs {
   ViewDistanceArgs viewDistanceArgs;
 
   LightRangeInfo lightRanges[lightTypeCount];
+
+  TerrainArgs terrainArgs;
 
   uint uniformRandomNumber;
   uint16_t opaqueDiffuseLobeSamplingProbabilityZeroThreshold;
@@ -251,4 +253,7 @@ struct RaytraceArgs {
   uint isLastCompositeOutputValid;
   uint isZUp; // Note: Indicates if the Z axis is the "up" axis in world space if true, otherwise the Y axis if false.
   uint enableCullingSecondaryRays;
+
+  u16vec2 gpuPrintThreadIndex;
+  uint gpuPrintElementIndex;
 };

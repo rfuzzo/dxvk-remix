@@ -23,6 +23,7 @@
 #include "dxvk_device.h"
 
 #include <algorithm>
+#include <numeric>
 
 namespace dxvk {
   
@@ -66,6 +67,13 @@ namespace dxvk {
 
 
   DxvkBuffer::~DxvkBuffer() {
+    // NV-DXVK start: buffer clones for orphaned slices
+    if (m_parent != nullptr) {
+      // Clones own nothing. Bail out.
+      return;
+    }
+    // NV-DXVK end
+
     const auto& vkd = m_device->vkd();
 
     for (const auto& buffer : m_buffers)
@@ -150,6 +158,13 @@ namespace dxvk {
     vkd->vkGetBufferMemoryRequirements2(
        vkd->device(), &memReqInfo, &memReq);
 
+    // NV-DXVK start: Increase memory requirement alignment based on override requirement.
+    // Note: This increase in alignment is safe to do as long as the override alignment is less than or equal to the maximum alignment
+    // required by the Vulkan spec (since raw device memory allocation will only gaurentee alignment in such cases even if custom
+    // sub-allocating logic can handle greater alignments).
+    memReq.memoryRequirements.alignment = std::lcm(memReq.memoryRequirements.alignment, m_info.requiredAlignmentOverride);
+    // NV-DXVK end
+
     // xxxnsubtil: avoid bad interaction with DxvkStagingDataAlloc
     // when dedicated allocations are used, the implicit memory recycling in DxvkStagingDataAlloc goes away for larger buffers,
     // which are often used for BVH builds; dedicated is not very meaningful for buffers, so ignore the hint if
@@ -208,6 +223,28 @@ namespace dxvk {
     return result;
   }
 
+  // NV-DXVK start: buffer clones for orphaned slices
+  DxvkBuffer::DxvkBuffer(DxvkBuffer& parent) 
+    : m_device   (parent.m_device),
+      m_info     (parent.m_info),
+      m_memAlloc (parent.m_memAlloc),
+      m_memFlags (parent.m_memFlags),
+      m_category (parent.m_category) {
+    m_buffer.buffer = parent.m_buffer.buffer;
+
+    m_physSlice = parent.m_physSlice;
+    m_vertexStride = parent.m_vertexStride;
+
+    m_parent = &parent;
+  }
+
+  Rc<DxvkBuffer> DxvkBuffer::clone() {
+    if (m_parent != nullptr) {
+      throw DxvkError("Refusing to clone a clone!");
+    }
+    return new DxvkBuffer(*this);
+  }
+  // NV-DXVK end
 
 
   

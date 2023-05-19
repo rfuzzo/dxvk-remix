@@ -56,12 +56,12 @@ class GameCapturer;
 struct AssetReplacement;
 struct AssetReplacer;
 class OpacityMicromapManager;
+class TerrainBaker;
 
 // The resource cache can be *searched* by other users
 class ResourceCache {
 public:
   bool find(const RaytraceBuffer& buf, uint32_t& outIdx) const { return m_bufferCache.find(buf, outIdx); }
-  bool find(const TextureRef& tex, uint32_t& outIdx) const { return m_textureCache.find(tex, outIdx); }
   bool find(const RtSurfaceMaterial& surf, uint32_t& outIdx) const { return m_surfaceMaterialCache.find(surf, outIdx); }
 
 protected:
@@ -71,18 +71,6 @@ protected:
     }
   };
   SparseRefCountCache<RaytraceBuffer, BufferHashFn> m_bufferCache;
-
-  struct TextureHashFn {
-    size_t operator() (const TextureRef& tex) const {
-      return tex.getUniqueKey();
-    }
-  };
-  struct TextureEquality {
-    bool operator()(const TextureRef& lhs, const TextureRef& rhs) const {
-      return lhs.getUniqueKey() == rhs.getUniqueKey();
-    }
-  };
-  SparseUniqueCache<TextureRef, TextureHashFn, TextureEquality> m_textureCache;
 
   struct SurfaceMaterialHashFn {
     size_t operator() (const RtSurfaceMaterial& mat) const {
@@ -131,7 +119,6 @@ public:
   bool isPreviousFrameSceneAvailable() const { return m_previousFrameSceneAvailable && getSurfaceMappingBuffer().ptr() != nullptr; }
 
   const std::vector<RaytraceBuffer>& getBufferTable() const { return m_bufferCache.getObjectTable(); }
-  const std::vector<TextureRef>& getTextureTable() const { return m_textureCache.getObjectTable(); }
   const std::vector<RtSurfaceMaterial>& getSurfaceMaterialTable() const { return m_surfaceMaterialCache.getObjectTable(); }
   const std::vector<RtVolumeMaterial>& getVolumeMaterialTable() const { return m_volumeMaterialCache.getObjectTable(); }
   const DrawCallCache& getDrawCallCache() const { return m_drawCallCache; }
@@ -146,6 +133,17 @@ public:
   const VolumeManager& getVolumeManager() const { return m_volumeManager; }
   LightManager& getLightManager() { return m_lightManager; }
   std::unique_ptr<AssetReplacer>& getAssetReplacer() { return m_pReplacer; }
+  TerrainBaker& getTerrainBaker() { return *m_terrainBaker.get(); }
+
+  // Scene utility functions
+  static Vector3 getSceneUp();
+  static Vector3 getSceneForward();
+  static Vector3 calculateSceneRight();
+
+  // Reswizzles input vector to an output that has xy coordinates on scene's horizontal axes and z coordinate to be on the scene's vertical axis
+  static Vector3 worldToSceneOrientedVector(const Vector3& worldVector); 
+
+  static Vector3 sceneToWorldOrientedVector(const Vector3& sceneVector);
 
   void addLight(const D3DLIGHT9& light);
   
@@ -170,8 +168,6 @@ public:
   // GameCapturer
   void triggerUsdCapture() const;
   bool isGameCapturerIdle() const;
-
-  void finalizeAllPendingTexturePromotions();
 
   void trackTexture(Rc<DxvkContext> ctx, TextureRef inputTexture, uint32_t& textureIndex, bool hasTexcoords, bool patchSampler = true, bool allowAsync = true);
 
@@ -231,6 +227,8 @@ private:
   CameraManager m_cameraManager;
 
   std::unique_ptr<AssetReplacer> m_pReplacer;
+
+  std::unique_ptr<TerrainBaker> m_terrainBaker;
 
   FogState m_fog;
 

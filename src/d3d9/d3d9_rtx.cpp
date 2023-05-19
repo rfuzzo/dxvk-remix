@@ -185,7 +185,7 @@ namespace dxvk {
       // Get vertex context
       const VertexContext& ctx = vertexContext[element.Stream];
 
-      if (ctx.buffer.handle == VK_NULL_HANDLE)
+      if (ctx.mappedSlice.handle == VK_NULL_HANDLE)
         continue;
 
       ScopedCpuProfileZoneN("Process Vertices");
@@ -194,7 +194,7 @@ namespace dxvk {
 
       // Validating index data here, vertexCount and vertexIndexOffset accounts for the min/max indices
       if (RtxOptions::Get()->getValidateCPUIndexData()) {
-        if (ctx.buffer.length < vertexOffset + numVertexBytes) {
+        if (ctx.mappedSlice.length < vertexOffset + numVertexBytes) {
           throw DxvkError("Invalid draw call");
         }
       }
@@ -232,14 +232,31 @@ namespace dxvk {
       if (targetBuffer != nullptr) {
         assert(!targetBuffer->defined());
 
-        // Only do the copy once
+        // Only do once for each stream
         if (!streamCopies[element.Stream].defined()) {
-          streamCopies[element.Stream] = m_rtStagingData.alloc(CACHE_LINE_SIZE, numVertexBytes);
+          // Deep clonning a buffer object is not cheap (320 bytes to copy and other work). Set a min-size threshold.
+          const uint32_t kMinSizeToClone = 512;
 
-          // Acquire prevents the staging allocator from re-using this memory
-          streamCopies[element.Stream].buffer()->acquire(DxvkAccess::Read);
+          // Check if buffer is actualy a d3d9 orphan
+          const bool isOrphan = !(ctx.buffer.getSliceHandle() == ctx.mappedSlice);
+          const bool canUseBuffer = ctx.canUseBuffer && m_forceGeometryCopy == false;
 
-          memcpy(streamCopies[element.Stream].mapPtr(0), (uint8_t*) ctx.buffer.mapPtr + vertexOffset, numVertexBytes);
+          if (canUseBuffer && !isOrphan) {
+            // Use the buffer directly if it is not an orphan
+            streamCopies[element.Stream] = ctx.buffer.subSlice(vertexOffset, numVertexBytes);
+          } else if (canUseBuffer && numVertexBytes > kMinSizeToClone) {
+            // Create a clone for the orphaned physical slice
+            auto clone = ctx.buffer.buffer()->clone();
+            clone->rename(ctx.mappedSlice);
+            streamCopies[element.Stream] = DxvkBufferSlice(clone, ctx.buffer.offset() + vertexOffset, numVertexBytes);
+          } else {
+            streamCopies[element.Stream] = m_rtStagingData.alloc(CACHE_LINE_SIZE, numVertexBytes);
+
+            // Acquire prevents the staging allocator from re-using this memory
+            streamCopies[element.Stream].buffer()->acquire(DxvkAccess::Read);
+
+            memcpy(streamCopies[element.Stream].mapPtr(0), (uint8_t*) ctx.mappedSlice.mapPtr + vertexOffset, numVertexBytes);
+          }
         }
 
         *targetBuffer = RasterBuffer(streamCopies[element.Stream], element.Offset, ctx.stride, DecodeDecltype(D3DDECLTYPE(element.Type)));
@@ -396,11 +413,13 @@ namespace dxvk {
   }
 
   bool D3D9Rtx::isRenderingUI() {
-    // Here we assume drawcalls with an orthographic projection are UI calls (as this pattern is common, and we can't raytrace these objects).
-    const bool isOrthographic = (d3d9State().transforms[GetTransformIndex(D3DTS_PROJECTION)][3][3] == 1.0f);
-    const bool zWriteEnabled = d3d9State().renderStates[D3DRS_ZWRITEENABLE];
-    if (isOrthographic && !zWriteEnabled) {
-      return true;
+    if (!m_parent->UseProgrammableVS()) {
+      // Here we assume drawcalls with an orthographic projection are UI calls (as this pattern is common, and we can't raytrace these objects).
+      const bool isOrthographic = (d3d9State().transforms[GetTransformIndex(D3DTS_PROJECTION)][3][3] == 1.0f);
+      const bool zWriteEnabled = d3d9State().renderStates[D3DRS_ZWRITEENABLE];
+      if (isOrthographic && !zWriteEnabled) {
+        return true;
+      }
     }
 
     // Check if UI texture bound
@@ -448,6 +467,9 @@ namespace dxvk {
 
     assert(status == RtxGeometryStatus::RayTraced || status == RtxGeometryStatus::Rasterized);
 
+    m_forceGeometryCopy = RtxOptions::Get()->useBuffersDirectly() == false;
+    m_forceGeometryCopy |= m_parent->GetOptions()->allowDiscard == false;
+
     // The packet we'll send to RtxContext with information about geometry
     RasterGeometry geoData;
     geoData.cullMode = DecodeCullMode(D3DCULL(d3d9State().renderStates[D3DRS_CULLMODE]));
@@ -494,7 +516,7 @@ namespace dxvk {
     processVertices(vertexContext, vertexIndexOffset, idealTexcoordIndex, geoData);
     geoData.futureGeometryHashes = computeHash(geoData, (maxIndex - minIndex));
     std::shared_future<SkinningData> futureSkinningData = processSkinning(geoData);
-    if (RtxOptions::Get()->calculateMeshBoundingBox()) {
+    if (RtxOptions::Get()->needsMeshBoundingBox()) {
       geoData.futureBoundingBox = computeAxisAlignedBoundingBox(geoData);
     } else {
       geoData.futureBoundingBox = std::shared_future<AxisAlignedBoundingBox>();
@@ -523,69 +545,89 @@ namespace dxvk {
 
   std::shared_future<SkinningData> D3D9Rtx::processSkinning(const RasterGeometry& geoData) {
     ScopedCpuProfileZone();
-    if (d3d9State().renderStates[D3DRS_VERTEXBLEND] != D3DVBF_DISABLE) {
-      bool hasBlendIndices = d3d9State().vertexDecl != nullptr ? d3d9State().vertexDecl->TestFlag(D3D9VertexDeclFlag::HasBlendIndices) : false;
-      bool indexedVertexBlend = hasBlendIndices && d3d9State().renderStates[D3DRS_INDEXEDVERTEXBLENDENABLE];
 
-      uint32_t numBonesPerVertex = 0;
-      switch (d3d9State().renderStates[D3DRS_VERTEXBLEND]) {
-      case D3DVBF_0WEIGHTS: numBonesPerVertex = 1; break;
-      case D3DVBF_1WEIGHTS: numBonesPerVertex = 2; break;
-      case D3DVBF_2WEIGHTS: numBonesPerVertex = 3; break;
-      case D3DVBF_3WEIGHTS: numBonesPerVertex = 4; break;
-      }
+    static const auto kEmptySkinningFuture = std::shared_future<SkinningData>();
 
-      RasterBuffer blendIndices;
-      // Analyze the vertex data and find the min and max bone indices used in this mesh.
-      // The min index is used to detect a case when vertex blend is enabled but there is just one bone used in the mesh,
-      // so we can drop the skinning pass. That is processed in RtxContext::commitGeometryToRT(...)
-      if (indexedVertexBlend && geoData.blendIndicesBuffer.defined()) {
-        blendIndices = geoData.blendIndicesBuffer;
-        // Acquire prevents the staging allocator from re-using this memory
-        blendIndices.buffer()->acquire(DxvkAccess::Read);
-      }
+    if (m_parent->UseProgrammableVS()) {
+      return kEmptySkinningFuture;
+    }
       
-      const uint32_t vertexCount = geoData.vertexCount;
+    // Some games set vertex blend without enough data to actually do the blending, handle that logic below.
 
-      return m_gpeWorkers.Schedule([cBoneMatrices = d3d9State().transforms, blendIndices, numBonesPerVertex, vertexCount]() -> SkinningData {
-        ScopedCpuProfileZone();
-        uint32_t numBones = numBonesPerVertex;
+    const bool hasBlendWeight = d3d9State().vertexDecl != nullptr ? d3d9State().vertexDecl->TestFlag(D3D9VertexDeclFlag::HasBlendWeight) : false;
+    const bool hasBlendIndices = d3d9State().vertexDecl != nullptr ? d3d9State().vertexDecl->TestFlag(D3D9VertexDeclFlag::HasBlendIndices) : false;
+    const bool indexedVertexBlend = hasBlendIndices && d3d9State().renderStates[D3DRS_INDEXEDVERTEXBLENDENABLE];
 
-        int minBoneIndex = 0;
-        if (blendIndices.defined()) {
-          const uint8_t* pBlendIndices = (uint8_t*)blendIndices.mapPtr(blendIndices.offsetFromSlice());
-          // Find out how many bone indices are specified for each vertex.
-          // This is needed to find out the min bone index and ignore the padding zeroes.
-          int maxBoneIndex = -1;
-          if (!getMinMaxBoneIndices(pBlendIndices, blendIndices.stride(), vertexCount, numBonesPerVertex, minBoneIndex, maxBoneIndex)) {
-            minBoneIndex = 0;
-            maxBoneIndex = 0;
-          }
-          numBones = maxBoneIndex + 1;
-
-          // Release this memory back to the staging allocator
-          blendIndices.buffer()->release(DxvkAccess::Read);
-        }
-
-        // Pass bone data to RT back-end
-        std::vector<Matrix4> bones;
-        bones.resize(numBones);
-        for (uint32_t i = 0; i < numBones; i++) {
-          bones[i] = cBoneMatrices[GetTransformIndex(D3DTS_WORLDMATRIX(i))];
-        }
-
-        SkinningData skinningData;
-        skinningData.pBoneMatrices = bones;
-        skinningData.minBoneIndex = minBoneIndex;
-        skinningData.numBones = numBones;
-        skinningData.numBonesPerVertex = numBonesPerVertex;
-        skinningData.computeHash(); // Computes the hash and stores it in the skinningData itself
-
-        return skinningData;
-      });
+    if (d3d9State().renderStates[D3DRS_VERTEXBLEND] == D3DVBF_DISABLE) {
+      return kEmptySkinningFuture;
     }
 
-    return std::shared_future<SkinningData>(); // empty future
+    if (d3d9State().renderStates[D3DRS_VERTEXBLEND] != D3DVBF_0WEIGHTS) {
+      if (!hasBlendWeight) {
+        return kEmptySkinningFuture;
+      }
+    } else if (!indexedVertexBlend) {
+      return kEmptySkinningFuture;
+    }
+
+    // We actually have skinning data now, process it!
+
+    uint32_t numBonesPerVertex = 0;
+    switch (d3d9State().renderStates[D3DRS_VERTEXBLEND]) {
+    case D3DVBF_0WEIGHTS: numBonesPerVertex = 1; break;
+    case D3DVBF_1WEIGHTS: numBonesPerVertex = 2; break;
+    case D3DVBF_2WEIGHTS: numBonesPerVertex = 3; break;
+    case D3DVBF_3WEIGHTS: numBonesPerVertex = 4; break;
+    }
+
+    RasterBuffer blendIndices;
+    // Analyze the vertex data and find the min and max bone indices used in this mesh.
+    // The min index is used to detect a case when vertex blend is enabled but there is just one bone used in the mesh,
+    // so we can drop the skinning pass. That is processed in RtxContext::commitGeometryToRT(...)
+    if (indexedVertexBlend && geoData.blendIndicesBuffer.defined()) {
+      blendIndices = geoData.blendIndicesBuffer;
+      // Acquire prevents the staging allocator from re-using this memory
+      blendIndices.buffer()->acquire(DxvkAccess::Read);
+    }
+      
+    const uint32_t vertexCount = geoData.vertexCount;
+
+    return m_gpeWorkers.Schedule([cBoneMatrices = d3d9State().transforms, blendIndices, numBonesPerVertex, vertexCount]() -> SkinningData {
+      ScopedCpuProfileZone();
+      uint32_t numBones = numBonesPerVertex;
+
+      int minBoneIndex = 0;
+      if (blendIndices.defined()) {
+        const uint8_t* pBlendIndices = (uint8_t*)blendIndices.mapPtr(blendIndices.offsetFromSlice());
+        // Find out how many bone indices are specified for each vertex.
+        // This is needed to find out the min bone index and ignore the padding zeroes.
+        int maxBoneIndex = -1;
+        if (!getMinMaxBoneIndices(pBlendIndices, blendIndices.stride(), vertexCount, numBonesPerVertex, minBoneIndex, maxBoneIndex)) {
+          minBoneIndex = 0;
+          maxBoneIndex = 0;
+        }
+        numBones = maxBoneIndex + 1;
+
+        // Release this memory back to the staging allocator
+        blendIndices.buffer()->release(DxvkAccess::Read);
+      }
+
+      // Pass bone data to RT back-end
+      std::vector<Matrix4> bones;
+      bones.resize(numBones);
+      for (uint32_t i = 0; i < numBones; i++) {
+        bones[i] = cBoneMatrices[GetTransformIndex(D3DTS_WORLDMATRIX(i))];
+      }
+
+      SkinningData skinningData;
+      skinningData.pBoneMatrices = bones;
+      skinningData.minBoneIndex = minBoneIndex;
+      skinningData.numBones = numBones;
+      skinningData.numBonesPerVertex = numBonesPerVertex;
+      skinningData.computeHash(); // Computes the hash and stores it in the skinningData itself
+
+      return skinningData;
+    });
   }
 
   template<bool FixedFunction>
@@ -689,6 +731,23 @@ namespace dxvk {
 
     DxvkRtxTextureStageState texStageState = createTextureStageState(d3d9State(), firstStage);
 
+    if (!m_forceGeometryCopy) {
+      if (auto texture = d3d9State().textures[firstStage]) {
+        auto commonTexture = GetCommonTexture(texture);
+        auto hash = commonTexture->GetImage()->getHash();
+
+        if (RtxOptions::Get()->alwaysCopyDecalGeometries()) {
+          // Only poke decal hashes when option is enabled.
+          m_forceGeometryCopy |= RtxOptions::Get()->isDecalTexture(hash) ||
+                                 RtxOptions::Get()->isDynamicDecalTexture(hash) ||
+                                 RtxOptions::Get()->isNonOffsetDecalTexture(hash) ||
+                                 // Fixme: atm terrain and world-space ui are considered decals..
+                                 RtxOptions::Get()->isTerrainTexture(hash) ||
+                                 RtxOptions::Get()->isWorldSpaceUiTexture(hash);
+        }
+      }
+    }
+
     m_parent->EmitCs([texSlotsForRT, texStageState](DxvkContext* ctx) {
       static_cast<RtxContext*>(ctx)->setTextureStageState(texStageState);
       static_cast<RtxContext*>(ctx)->setTextureSlots(texSlotsForRT[0], texSlotsForRT[1]);
@@ -715,7 +774,15 @@ namespace dxvk {
       if (vbo != nullptr) {
         vertices[i].stride = dx9Vbo.stride;
         vertices[i].offset = dx9Vbo.offset;
-        vertices[i].buffer = vbo->GetMappedSlice();
+        vertices[i].buffer = vbo->GetBufferSlice<D3D9_COMMON_BUFFER_TYPE_MAPPING>();
+        vertices[i].mappedSlice = vbo->GetMappedSlice();
+        // If staging upload has been enabled on a buffer then previous buffer lock:
+        //   a) triggered a pipeline stall (overlapped mapped ranges, improper flags etc)
+        //   b) does not have D3DLOCK_DONOTWAIT, or was in use at Map()
+        // 
+        // Buffers with staged uploads may have contents valid ONLY until next Map().
+        // We must NOT use such buffer directly and have to always copy the contents.
+        vertices[i].canUseBuffer = vbo->DoesStagingBufferUploads() == false;
       }
     }
 
@@ -741,7 +808,9 @@ namespace dxvk {
     VertexContext vertices[caps::MaxStreams];
     vertices[0].stride = vertexStride;
     vertices[0].offset = 0;
-    vertices[0].buffer = buffer.slice.getSliceHandle(0, vertexSize);
+    vertices[0].buffer = buffer.slice.subSlice(0, vertexSize);
+    vertices[0].mappedSlice = buffer.slice.getSliceHandle(0, vertexSize);
+    vertices[0].canUseBuffer = true;
 
     return internalPrepareDraw(indices, vertices, drawContext);
   }

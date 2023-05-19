@@ -87,8 +87,9 @@ namespace dxvk {
       return m_texture.data(layer, 0, level);
     }
 
-    void evictCache() override {
-    }
+    void evictCache(int, int) override { }
+
+    void releaseSource() override { }
 
     void placement(
       int       layer,
@@ -189,7 +190,16 @@ namespace dxvk {
     FILE* openHandle() {
       assert(!m_filename.empty() && "DDS filename cannot be empty");
       if (m_file == nullptr) {
-        m_file = gli::detail::open_file(m_filename.c_str(), "rb");
+        errno = 0;
+        m_file = std::fopen(m_filename.c_str(), "rb");
+
+        if (m_file == nullptr) {
+          if (errno == EMFILE) {
+            throw DxvkError("Unable to open a DDS file: too many open files. "
+                            "Please consider using AssetData::releaseSource() "
+                            "method to keep the number of open files low.");
+          }
+        }
       }
       return m_file;
     }
@@ -244,26 +254,32 @@ namespace dxvk {
       return AssetType::Image2D;
     }
 
-  public:
-
-    ~DdsTextureData() override {
+    int getKey(int layer, int level) const {
+      return (layer * m_faces + 0) * m_levels + level;
     }
 
+  public:
+
+    ~DdsTextureData() override { }
+
     const void* data(int layer, int level) override {
-      int key = (layer * m_faces + 0) * m_levels + level;
+      int key = getKey(layer, level);
       const auto& it = m_data.find(key);
-      if (it != m_data.end())
+      if (it != m_data.end() && !it->second.empty())
         return it->second.data();
 
       long dataOffset;
       size_t dataSize;
       getDataPlacement(layer, 0, level, dataOffset, dataSize);
 
-      if (m_fileSize < dataOffset + dataSize)
+      if (m_fileSize < dataOffset + dataSize) {
+        Logger::warn(str::format("Corrupted DDS file discovered: ", m_filename));
         return nullptr;
+      }
 
       auto file = openHandle();
-
+      assert(file);
+      
       std::vector<uint8_t> data;
       std::fseek(file, dataOffset, SEEK_SET);
       data.resize(dataSize);
@@ -274,8 +290,12 @@ namespace dxvk {
       return rawData;
     }
 
-    void evictCache() override {
-      m_data.clear();
+    void evictCache(int layer, int level) override {
+      int key = getKey(layer, level);
+      releaseVectorMemory(m_data[key]);
+    }
+
+    void releaseSource() override {
       closeHandle();
     }
 
@@ -377,7 +397,7 @@ namespace dxvk {
       uint32_t blobIdx = getBlobIndex(layer, 0, level);
 
       const auto& it = m_data.find(blobIdx);
-      if (it != m_data.end())
+      if (it != m_data.end() && !it->second.empty())
         return it->second.data();
 
       if (auto blobDesc = m_package->getDataBlobDesc(blobIdx)) {
@@ -396,8 +416,12 @@ namespace dxvk {
       return nullptr;
     }
 
-    void evictCache() override {
-      m_data.clear();
+    void evictCache(int layer, int level) override {
+      uint32_t blobIdx = getBlobIndex(layer, 0, level);
+      releaseVectorMemory(m_data[blobIdx]);
+    }
+
+    void releaseSource() override {
     }
 
     void placement(

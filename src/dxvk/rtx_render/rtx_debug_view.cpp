@@ -65,6 +65,7 @@ namespace dxvk {
 
         {DEBUG_VIEW_POSITION, "Position"},
         {DEBUG_VIEW_TEXCOORDS, "Texture Coordinates"},
+        {DEBUG_VIEW_TEXCOORD_GENERATION_MODE, "Texture Coordinates Generation Mode"},
         {DEBUG_VIEW_VIRTUAL_MOTION_VECTOR, "Virtual Motion Vector"},
         {DEBUG_VIEW_SCREEN_SPACE_MOTION_VECTOR, "Screen-Space Motion Vector"},
         {DEBUG_VIEW_TRIANGLE_NORMAL, "Triangle Normal"},
@@ -78,6 +79,7 @@ namespace dxvk {
 
         {DEBUG_VIEW_MATERIAL_TYPE, "Material Type"},
         {DEBUG_VIEW_ALBEDO, "Diffuse Albedo"},
+        {DEBUG_VIEW_RAW_ALBEDO, "Diffuse Raw Albedo (RGS only)"},        
         {DEBUG_VIEW_BASE_REFLECTIVITY, "Base Reflectivity"},
         {DEBUG_VIEW_ROUGHNESS, "Isotropic Roughness"},
         {DEBUG_VIEW_PERCEPTUAL_ROUGHNESS, "Perceptual Roughness"},
@@ -86,6 +88,11 @@ namespace dxvk {
         {DEBUG_VIEW_OPACITY, "Opacity"},
         {DEBUG_VIEW_EMISSIVE_RADIANCE, "Emissive Radiance"},
         {DEBUG_VIEW_THIN_FILM_THICKNESS, "Thin Film Thickness"},
+
+        {DEBUG_VIEW_IS_BAKED_TERRAIN, "Terrain: Is Baked Terrain (RGS only)"},
+        {DEBUG_VIEW_TERRAIN_MAP, "Terrain: Cascade Map"},
+        {DEBUG_VIEW_TERRAIN_MAP_OPACITY, "Terrain: Cascade Map Opacity"},
+        {DEBUG_VIEW_CASCADE_LEVEL, "Terrain: Cascade Level (RGS only)"},
 
         {DEBUG_VIEW_VIRTUAL_HIT_DISTANCE, "Virtual Hit Distance"},
         {DEBUG_VIEW_PRIMARY_DEPTH, "Primary Depth" },
@@ -226,6 +233,7 @@ namespace dxvk {
         TEXTURE2D(DEBUG_VIEW_BINDING_FINAL_SHADING_INPUT)
         TEXTURE2D(DEBUG_VIEW_BINDING_COMPOSITE_OUTPUT_INPUT)
         TEXTURE2D(DEBUG_VIEW_BINDING_INSTRUMENTATION_INPUT)
+        TEXTURE2D(DEBUG_VIEW_BINDING_TERRAIN_INPUT)
 
         SAMPLER(DEBUG_VIEW_BINDING_LINEAR_SAMPLER)
         
@@ -412,6 +420,15 @@ namespace dxvk {
 
       ImGui::Unindent();
     }
+
+    ImGui::Checkbox("Enable GPU Printing On Press CTRL", &gpuPrint.enableObject());
+
+    if (ImGui::CollapsingHeader("GPU Print", collapsingHeaderFlags)) {
+      ImGui::Checkbox("Use Mouse Position", &gpuPrint.useMousePositionObject());
+      if (!gpuPrint.useMousePosition()) {
+        ImGui::DragInt2("Pixel Position", &gpuPrint.pixelIndexObject(), 0.1f, 0, INT32_MAX, "%d", sliderFlags);
+      }
+    }   
   }
 
   void DebugView::createConstantsBuffer()
@@ -599,6 +616,9 @@ namespace dxvk {
 
         ctx->bindResourceSampler(DEBUG_VIEW_BINDING_NEAREST_SAMPLER, nearestSampler);
         ctx->bindResourceSampler(DEBUG_VIEW_BINDING_LINEAR_SAMPLER, linearSampler);
+
+        const auto terrain = m_device->getCommon()->getResources().getTerrainTexture(ctx);
+        ctx->bindResourceView(DEBUG_VIEW_BINDING_TERRAIN_INPUT, terrain.view, nullptr);
 
         ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, DebugViewShader::getShader());
 

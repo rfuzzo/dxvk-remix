@@ -44,15 +44,14 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 | :-- | :-: | :-: | :-- |
 |rtx.adaptiveAccumulation|bool|True||
 |rtx.adaptiveResolutionDenoising|bool|True||
-|rtx.adaptiveResolutionReservedCPUMemoryGiB|int|2|The amount of CPU memory in gibibytes to reserve away from consideration for adaptive resolution replacement textures\.<br>This value should only be changed to reflect the estimated amount of memory Remix itself consumes on the CPU \(aside from texture loading\) and should not be changed otherwise\.<br>Only relevant when force high resolution replacement textures is disabled and adaptive resolution replacement textures is enabled\. See asset estimated size parameter for more information\.<br>|
 |rtx.adaptiveResolutionReservedGPUMemoryGiB|int|2|The amount of GPU memory in gibibytes to reserve away from consideration for adaptive resolution replacement textures\.<br>This value should only be changed to reflect the estimated amount of memory Remix itself consumes on the GPU \(aside from texture loading, mostly from rendering\-related buffers\) and should not be changed otherwise\.<br>Only relevant when force high resolution replacement textures is disabled and adaptive resolution replacement textures is enabled\. See asset estimated size parameter for more information\.<br>|
 |rtx.allowFSE|bool|False|A flag indicating if the application should be able to utilize exclusive full screen mode when set to true, otherwise force it to be disabled when set to false\.<br>Exclusive full screen may see performance benefits over other fullscreen modes at the cost of stability in some cases\.<br>Do note that on modern Windows full screen optimizations will likely be used regardless which in most cases results in performance similar to exclusive full screen even when it is not in use\.|
+|rtx.alwaysCopyDecalGeometries|bool|True|When set to True tells the geometry processor to always copy decals geometry\. This is an optimization flag to experiment with when rtx\.useBuffersDirectly is True\.|
 |rtx.alwaysWaitForAsyncTextures|bool|False||
 |rtx.antiCulling.antiCullingFovScale|float|1.15|\[Experimental\] Scalar of the FOV of Anti\-Culling Frustum\.|
 |rtx.antiCulling.enableAntiCulling|bool|False|\[Experimental\] Enable Anti\-Culling, allow extending life of objects outside the anti\-culling frustum\.|
 |rtx.antiCulling.numKeepInstances|int|1000|\[Experimental\] When enable anti\-culling, the maximum number of RayTracing instances we hold in the BVH\. If the total number of RT instances pass this threshold, instances pass their original life length \(it may be extended after anti\-culling\) will be removed\.|
 |rtx.applicationId|int|102100511|Used to uniquely identify the application to DLSS\. Generally should not be changed without good reason\.|
-|rtx.assetEstimatedSizeGiB|int|2|The estimated size in gibibytes of all of the assets expected to be loaded typically in a standard scene\.<br>This value is important to set on more production\-ready games as it will allow texture loading to calculate which mip levels to load up to in order to ensure memory usage does not exceed CPU or GPU memory limits\.<br>Note that setting this value too high may force textures to load as lower quality than they may be able to if there is enough memory available \(as this is just an estimate\), so it is better to estimate a lower size than a higher one\.<br>Finally, this value is only relevant when force high resolution replacement textures is disabled and adaptive resolution replacement textures is enabled\.<br>For more information the mip calculations in the code should be referenced, but generally this value is used in conjunction with the estimated GPU pipeline resource and CPU game data sizes as well as the general CPU/GPU free memory to determine which mip level will fit in the remaining space\.|
 |rtx.asyncTextureUploadPreloadMips|int|8||
 |rtx.autoExposure.autoExposureSpeed|float|5|Average exposure changing speed when the image changes\.|
 |rtx.autoExposure.centerMeteringSize|float|0.5|The importance of pixels around the screen center\.|
@@ -67,6 +66,7 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.autoExposure.exposureWeightCurve3|float|1|Curve control point 3\.|
 |rtx.autoExposure.exposureWeightCurve4|float|1|Curve control point 4\.|
 |rtx.autoExposure.useExposureCompensation|bool|False|Uses a curve to determine the importance of different exposure levels when calculating average exposure\.|
+|rtx.automation.disableBlockingDialogBoxes|bool|False|Disables various blocking blocking dialog boxes \(such as popup windows\) requiring user interaction when set to true, otherwise uses default behavior when set to false\.<br>This option is typically meant for automation\-driven execution of Remix where such dialog boxes if present may cause the application to hang due to blocking waiting for user input\.|
 |rtx.blockInputToGameInUI|bool|True||
 |rtx.bloom.enable|bool|True||
 |rtx.bloom.intensity|float|0.06||
@@ -99,11 +99,15 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.compositeSecondaryCombinedSpecular|bool|True||
 |rtx.debugView.debugViewIdx|int|0||
 |rtx.debugView.displayType|int|0||
-|rtx.debugView.enablePseudoColor|bool|False||
+|rtx.debugView.enablePseudoColor|bool|False|Enables RGB color coding of a scalar debug view value\.|
 |rtx.debugView.evMaxValue|int|4||
 |rtx.debugView.evMinValue|int|-4||
+|rtx.debugView.gpuPrint.enable|bool|False|Enables writing into a GPU buffer that's read by CPU when CTRL is pressed\. The value is printed to console\.|
+|rtx.debugView.gpuPrint.pixelIndex|int2|2147483647, 2147483647|Pixel position to GPU print for\. Requires useMousePosition to be turned off\.|
+|rtx.debugView.gpuPrint.useMousePosition|bool|True|Uses mouse position to select a pixel to GPU print for\.|
 |rtx.debugView.maxValue|float|1||
 |rtx.debugView.minValue|float|0||
+|rtx.debugView.samplerType|int|2|Sampler type for debug views that sample from a texture \(applies only to a subset of debug views\)\.<br>0: Nearest\.<br>1: Normalized Nearest\.<br>2: Normalized Linear\.|
 |rtx.decalNormalOffset|float|0.003|Distance along normal to offset between two adjacent decals to prevent coplanar rendering issues such as Z\-fighting\.|
 |rtx.defaultToAdvancedUI|bool|False||
 |rtx.demodulate.demodulateRoughness|bool|True|Demodulate roughness to improve specular details\.|
@@ -190,8 +194,8 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.enableRussianRoulette|bool|True|A flag to enable or disable Russian Roulette, a rendering technique to give paths a chance of terminating randomly with each bounce based on their importance\.<br>This is usually useful to have enabled as it will ensure useless paths are terminated earlier while more important paths are allowed to accumulate more bounces\.<br>Furthermore this allows for the renderer to remain unbiased whereas a hard clamp on the number of bounces will introduce bias \(though this is also done in Remix for the sake of performance\)\.<br>On the other hand, randomly terminating paths too aggressively may leave threads in GPU warps without work which may hurt thread occupancy when not used with a thread\-reordering technique like SER\.|
 |rtx.enableSecondaryBounces|bool|True|Enables indirect lighting \(lighting from diffuse/specular bounces to one or more other surfaces\) on surfaces when set to true, otherwise disables it\.|
 |rtx.enableSeparateUnorderedApproximations|bool|True|Use a separate loop during resolving for surfaces which can have lighting evaluated in an approximate unordered way on each path segment \(such as particles\)\.<br>This improves performance typically in how particles or decals are rendered and should usually always be enabled\.<br>Do note however the unordered nature of this resolving method may result in visual artifacts with large numbers of stacked particles due to difficulty in determining the intended order\.<br>Additionally, unordered approximations will only be done on the first indirect ray bounce \(as particles matter less in higher bounces\), and only if enabled by its corresponding setting\.|
-|rtx.enableShaderExecutionReorderingInPathtracerGbuffer|bool|False||
-|rtx.enableShaderExecutionReorderingInPathtracerIntegrateIndirect|bool|True||
+|rtx.enableShaderExecutionReorderingInPathtracerGbuffer|bool|False|\(Note: Hard disabled in shader code\) Enables Shader Execution Reordering \(SER\) in GBuffer Raytrace pass if SER is supported\.|
+|rtx.enableShaderExecutionReorderingInPathtracerIntegrateIndirect|bool|True|Enables Shader Execution Reordering \(SER\) in Integrate Indirect pass if SER is supported\.|
 |rtx.enableStochasticAlphaBlend|bool|True|Use stochastic alpha blend\.|
 |rtx.enableUnorderedEmissiveParticlesInIndirectRays|bool|False|A flag to enable or disable unordered resolve emissive particles specifically in indirect rays\.<br>Should be enabled in higher quality rendering modes as emissive particles are fairly important in reflections, but may be disabled to skip such interactions which can improve performance on lower end hardware\.<br>Note that rtx\.enableUnorderedResolveInIndirectRays must first be enabled for this option to take any effect \(as it will control if unordered resolve is used to begin with in indirect rays\)\.|
 |rtx.enableUnorderedResolveInIndirectRays|bool|True|A flag to enable or disable unordered resolve approximations in indirect rays\.<br>This allows for the presence of unordered approximations in resolving to be overridden in indirect rays and as such requires separate unordered approximations to be enabled to have any effect\.<br>This option should be enabled if objects which can be resolvered in an unordered way in indirect rays are expected for higher quality in reflections, but may come at a performance cost\.<br>Note that even with this option enabled, unordered resolve approximations are only done on the first indirect bounce for the sake of performance overall\.|
@@ -243,7 +247,6 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.ignoreGameDirectionalLights|bool|False|Ignores any directional lights coming from the original game \(lights added via toolkit still work\)\.|
 |rtx.ignoreGamePointLights|bool|False|Ignores any point lights coming from the original game \(lights added via toolkit still work\)\.|
 |rtx.ignoreGameSpotLights|bool|False|Ignores any spot lights coming from the original game \(lights added via toolkit still work\)\.|
-|rtx.ignoreStencilVolumeHeuristics|bool|True|Tries to detect stencil volumes and ignore those when pathtracing\.  Stencil buffer was used for a variety of effects in the D3D7\-9 era, mostly for geometry based lights and shadows \- things we don't need when pathtracing\.|
 |rtx.indirectRaySpreadAngleFactor|float|0.05|A tuning factor applied to the spread angle calculated from the sampled lobe solid angle PDF\. Should be 0\-1\.<br>This scaled spread angle is used to widen a ray's cone angle after indirect lighting BRDF samples to essentially prefilter the effects of the BRDF lobe's spread which potentially may reduce noise from indirect rays \(e\.g\. reflections\)\.<br>Prefiltering will overblur detail however compared to the ground truth of casting multiple samples especially given this calculated spread angle is a basic approximation and ray cones to begin with are a simple approximation for ray pixel footprint\.<br>As such rather than using the spread angle fully this spread angle factor allows it to be scaled down to something more narrow so that overblurring can be minimized\. Similarly, setting this factor to 0 disables this cone angle widening feature\.|
 |rtx.initializer.asyncAssetLoading|bool|True||
 |rtx.initializer.asyncShaderFinalizing|bool|True||
@@ -257,7 +260,7 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.io.useAsyncQueue|bool|True||
 |rtx.isLHS|bool|False||
 |rtx.isReflexSupported|bool|True||
-|rtx.isShaderExecutionReorderingSupported|bool|False||
+|rtx.isShaderExecutionReorderingSupported|bool|True|Enables support of Shader Execution Reordering \(SER\) if it is supported by the target HW and SW\.|
 |rtx.keepTexturesForTagging|bool|False|A flag to keep all textures in video memory, which can drastically increase VRAM consumption\. Intended to assist with tagging textures that are only used for a short period of time \(such as loading screens\)\. Use only when necessary\!|
 |rtx.legacyMaterial.albedoConstant|float3|1, 1, 1|The default albedo constant to use for non\-replaced "legacy" materials\. Should be a color in sRGB colorspace with gamma encoding\.|
 |rtx.legacyMaterial.alphaIsThinFilmThickness|bool|False|A flag to determine if the alpha channel from the albedo source should be treated as thin film thickness on non\-replaced "legacy" materials\.|
@@ -309,9 +312,9 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.numFramesToKeepGeometryData|int|5||
 |rtx.numFramesToKeepInstances|int|1||
 |rtx.numFramesToKeepLights|int|100||
-|rtx.numFramesToKeepMaterialTextures|int|30||
+|rtx.numFramesToKeepMaterialTextures|int|5||
 |rtx.opacityMicromap.conservativeEstimationMaxTexelTapsPerMicroTriangle|int|64|Set to 64 as a safer cap\. 512 has been found to cause a timeout\.|
-|rtx.opacityMicromap.enable|bool|True||
+|rtx.opacityMicromap.enable|bool|False||
 |rtx.opacityMicromap.enableParticles|bool|True||
 |rtx.opacityMicromap.enableResetEveryFrame|bool|False||
 |rtx.opacityMicromap.maxBudgetSizeMB|int|1536||
@@ -444,7 +447,7 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.serializeChangedOptionOnly|bool|True||
 |rtx.shakeCamera|bool|False||
 |rtx.showUI|int|0|0 = Don't Show, 1 = Show Simple, 2 = Show Advanced\.|
-|rtx.showUICursor|bool|False||
+|rtx.showUICursor|bool|True||
 |rtx.skipDrawCallsPostRTXInjection|bool|False|Ignores all draw calls recorded after RTX Injection, the location of which varies but is currently based on when tagged UI textures begin to draw\.|
 |rtx.skipObjectsWithUnknownCamera|bool|False||
 |rtx.skyBrightness|float|1||
@@ -470,6 +473,18 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.temporalAA.colorClampingFactor|float|1||
 |rtx.temporalAA.maximumRadiance|float|10000||
 |rtx.temporalAA.newFrameWeight|float|1||
+|rtx.terrainBaker.cascadeMap.defaultHalfWidth|float|1000|Cascade map square's default half width around the camera \[meters\]\. Used when the terrain's BBOX couldn't be estimated\.|
+|rtx.terrainBaker.cascadeMap.defaultHeight|float|1000|Cascade map baker's camera default height above the in\-game camera \[meters\]\. Used when the terrain's BBOX couldn't be estimated\.|
+|rtx.terrainBaker.cascadeMap.expandLastCascade|bool|True|Expands the last cascade's footprint to cover the whole cascade map\. This ensures all terrain surface has valid baked texture data to sample from across the cascade map's range even if there isn't enough cascades generated \(due to the current settings or limitations\)\.|
+|rtx.terrainBaker.cascadeMap.levelHalfWidth|float|10|First cascade level square's half width around the camera \[meters\]\.|
+|rtx.terrainBaker.cascadeMap.levelResolution|int|4096|Texture resolution per cascade level\.|
+|rtx.terrainBaker.cascadeMap.maxLevels|int|8|Max number of cascade levels\.|
+|rtx.terrainBaker.cascadeMap.useTerrainBBOX|bool|True|Uses terrain's bounding box to calculate the cascade map's scene footprint\.|
+|rtx.terrainBaker.clearTerrainBeforeBaking|bool|False|Performs a clear on the terrain texture before it is baked to in a frame\.|
+|rtx.terrainBaker.debugDisableBaking|bool|False|Force disables rebaking every frame\. Used for debugging only\.|
+|rtx.terrainBaker.debugDisableBinding|bool|False|Force disables binding of the baked terrain texture to the terrain meshes\. Used for debugging only\.|
+|rtx.terrainBaker.enableBaking|bool|True|\[Experimental\] Enables runtime baking of blended terrains from top down \(i\.e\. in an opposite direction of "rtx\.zUp"\)\.<br>It bakes multiple blended albedo terrain textures into a single texture sampled during ray tracing\. The system requires "Terrain Textures" to contain hashes of the terrain textures to apply\.<br>Only use this system if the game renders terrain surfaces with multiple blended surfaces on top of each other \(i\.e\. sand mixed with dirt, grass, snow, etc\.\)\.<br>Requirement: the baked terrain surfaces must not be placed vertically in the game world\. Horizontal surfaces will have the best image quality\. Requires "rtx\.zUp" to be set properly\.|
+|rtx.texturemanager.budgetPercentageOfAvailableVram|int|50|The percentage of available VRAM we should use for material textures\.  If material textures are required beyond this budget, then those textures will be loaded at lower quality\.  Important note, it's impossible to perfectly match the budget while maintaining reasonable quality levels, so use this as more of a guideline\.  If the replacements assets are simply too large for the target GPUs available vid mem, we may end up going overbudget regularly\.  Defaults to 50% of the available VRAM\.|
 |rtx.tonemap.colorBalance|float3|1, 1, 1||
 |rtx.tonemap.colorGradingEnabled|bool|False||
 |rtx.tonemap.contrast|float|1||
@@ -498,6 +513,7 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.upscalerType|int|1|Upscaling boosts performance with varying degrees of image quality tradeoff depending on the type of upscaler and the quality mode/preset\.|
 |rtx.upscalingMipBias|float|0|Specifies a mipmapping level bias to add to all material texture filtering when upscaling \(such as DLSS\) is used\.<br>Mipmaps are determined based on how far away a texture is, using this can bias the desired level in a lower quality direction \(positive bias\), or a higher quality direction with potentially more aliasing \(negative bias\)\.<br>Note that mipmaps are also important for good spatial caching of textures, so too far negative of a mip bias may start to significantly affect performance, therefore changing this value is not recommended|
 |rtx.useAnisotropicFiltering|bool|True|A flag to indicate if anisotropic filtering should be used on material textures, otherwise typical trilinear filtering will be used\.<br>This should generally be enabled as anisotropic filtering allows for less blurring on textures at grazing angles than typical trilinear filtering with only usually minor performance impact \(depending on the max anisotropy samples\)\.|
+|rtx.useBuffersDirectly|bool|True|When enabled Remix will use the incoming vertex buffers directly where possible instead of copying data\. Note: setting the d3d9\.allowDiscard to False will disable this option\.|
 |rtx.useDenoiser|bool|True|Enables usage of denoiser\(s\) when set to true, otherwise disables denoising when set to false\.<br>Denoising is important for filtering the raw noisy ray traced signal into a smoother and more stable result at the cost of some potential spatial/temporal artifacts \(ghosting, boiling, blurring, etc\)\.<br>Generally should remain enabled except when debugging behavior which requires investigating the output directly, or diagnosing denoising\-related issues\.|
 |rtx.useDenoiserReferenceMode|bool|False|Enables the reference "denoiser" when set to true, otherwise uses the standard denoiser when set to false\. Note this requires the denoiser to be enabled to function\.<br>The reference denoiser allows for a reference multi\-sample per pixel contribution to accumulate which should converge slowly to the ideal result the renderer is working towards\.<br>Useful for analyzing quality differences in various denoising methods, post\-processing filters, or for more accurately comparing subtle effects of potentially biased rendering techniques which may be hard to see through usual noise and filtering\.<br>Also useful for higher quality artistic renders of a scene beyond what is possible in realtime\.|
 |rtx.useHighlightLegacyMode|bool|False||
@@ -554,7 +570,7 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.decalTextures|hash set||Textures on draw calls used for static geometric decals or decals with complex topology\.<br>These materials will be blended over the materials underneath them when decal material blending is enabled\.<br>A small configurable offset is applied to each flat part of these decals to prevent coplanar geometric cases \(which poses problems for ray tracing\)\.|
 |rtx.dynamicDecalTextures|hash set||Textures on draw calls used for dynamically spawned geometric decals, such as bullet holes\.<br>These materials will be blended over the materials underneath them when decal material blending is enabled\.<br>A small configurable offset is applied to each flat part of these decals to prevent coplanar geometric cases \(which poses problems for ray tracing\)\.|
 |rtx.geometryAssetHashRuleString|string|positions,indices,geometrydescriptor|Defines which hashes we need to include when sampling from replacements and doing USD capture\.|
-|rtx.geometryGenerationHashRuleString|string|positions,indices,texcoords,geometrydescriptor,vertexlayout|Defines which asset hashes we need to generate via the geometry processing engine\.|
+|rtx.geometryGenerationHashRuleString|string|positions,indices,texcoords,geometrydescriptor,vertexlayout,vertexshader|Defines which asset hashes we need to generate via the geometry processing engine\.|
 |rtx.hideInstanceTextures|hash set||Textures on draw calls that should be hidden from rendering, but not totally ignored\.<br>This is similar to rtx\.ignoreTextures but instead of completely ignoring such draw calls they are only hidden from rendering, allowing for the hidden objects to still appear in captures\.<br>As such, this is mostly only a development tool to hide objects during development until they are properly replaced, otherwise the objects should be ignored with rtx\.ignoreTextures instead for better performance\.|
 |rtx.ignoreLights|hash set||Lights that should be ignored\.<br>Any matching light will be skipped and not added to be ray traced\.|
 |rtx.ignoreTextures|hash set||Textures on draw calls that should be ignored\.<br>Any draw call using an ignore texture will be skipped and not ray traced, useful for removing undesirable rasterized effects or geometry not suitable for ray tracing\.|
@@ -566,9 +582,10 @@ Tables below enumerate all the options and their defaults set by RTX Remix. Note
 |rtx.playerModelBodyTextures|hash set|||
 |rtx.playerModelTextures|hash set|||
 |rtx.rayPortalModelTextureHashes|hash vector||Texture hashes identifying ray portals\. Allowed number of hashes: \{0, 2\}\.|
+|rtx.skyBoxGeometries|hash set||Geometries from draw calls used for the sky or are otherwise intended to be very far away from the camera at all times \(no parallax\)\.<br>Any draw calls using a geometry hash in this list will be treated as sky and rendered as such in a manner different from typical geometry\.<br>The geometry hash being used for sky detection is based off of the asset hash rule, see: "rtx\.geometryAssetHashRuleString"\.|
 |rtx.skyBoxTextures|hash set||Textures on draw calls used for the sky or are otherwise intended to be very far away from the camera at all times \(no parallax\)\.<br>Any draw calls using a texture in this list will be treated as sky and rendered as such in a manner different from typical geometry\.|
 |rtx.sourceRootPath|string||A path pointing at the root folder of the project, used to override the path to the root of the project generated at build\-time \(as this path is only valid for the machine the project was originally compiled on\)\. Used primarily for locating shader source files for runtime shader recompilation\.|
-|rtx.terrainTextures|hash set|||
+|rtx.terrainTextures|hash set||Albedo textures that are baked blended together to form a unified terrain texture used during ray tracing\.<br>Put albedo textures into this category if the game renders terrain as a blend of multiple textures\.|
 |rtx.uiTextures|hash set||Textures on draw calls that should be treated as screenspace UI elements\.<br>All exclusively UI\-related textures should be classified this way and doing so allows the UI to be rasterized on top of the ray traced scene like usual\.<br>Note that currently the first UI texture encountered triggers RTX injection \(though this may change in the future as this does cause issues with games that draw UI mid\-frame\)\.|
 |rtx.worldSpaceUiBackgroundTextures|hash set|||
 |rtx.worldSpaceUiTextures|hash set||Textures on draw calls that should be treated as worldspace UI elements\.<br>Unlike typical UI textures this option is useful for improved rendering of UI elements which appear as part of the scene \(moving around in 3D space rather than as a screenspace element\)\.|
